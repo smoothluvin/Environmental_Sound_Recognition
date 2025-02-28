@@ -173,3 +173,7 @@ cython_debug/
 # Data Files
 data/
 .data
+
+# Models
+models/
+.models
