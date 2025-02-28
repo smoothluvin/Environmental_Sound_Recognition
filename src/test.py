@@ -27,8 +27,12 @@ mel_spectrogram = mel_spectrogram.unsqueeze(0).to(device)  # Add batch and chann
 # Making the prediction
 with torch.no_grad():
     output = model(mel_spectrogram)
+    probabilities = torch.nn.functional.softmax(output, dim=1)
     predicted_class_idx = torch.argmax(output, dim=1).item()
 
 predicted_class_name = TARGET_CLASSES[predicted_class_idx]
 
 print(f"Predicted Sound Class: {predicted_class_name}")
+print("Confidence Scores: ") # Highly confident but incorrect indicates bias, uncertain means it needs better training
+for i, (class_name, score) in enumerate(zip(TARGET_CLASSES, probabilities[0].cpu().numpy())):
+    print(f"   - {class_name}: {score:.4f}")
