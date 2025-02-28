@@ -21,7 +21,7 @@ model = SoundCNN(num_classes=NUM_CLASSES).to(device)
 
 # Loss and Optimizer
 criterion = nn.CrossEntropyLoss()
-optimizer = optim.Adam(mode.parameters(), lr=LEARNING_RATE)
+optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE)
 
 # Training Loop where epochs refer to the number of iterations we go through the dataset
 for epoch in range(EPOCHS):
