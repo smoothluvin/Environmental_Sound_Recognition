@@ -5,6 +5,7 @@ import pywt
 from scipy.stats import kurtosis
 from scipy.signal import wiener
 import soundfile as sf
+import os
 
 # ----------------------- Filtering Functions -----------------------
 
@@ -186,6 +187,20 @@ def process_audio(file_path):
     print("Spectral Kurtosis:", spec_kurtosis)
     print("Average ZCR:", avg_zcr)
     print("Crest Factor:", crest_factor)
+
+    analysis_dir = "/mnt/c/Users/eqtng/Dropbox/SFSU/697/analysis_results"
+    os.makedirs(analysis_dir, exist_ok=True)
+
+    analysis_file_path = os.path.join(analysis_dir, "analysis_results.txt")
+
+    with open("analysis_results.txt", "w") as f:
+        f.write(f"Average STE: {avg_ste}\n")
+        f.write(f"Average Spectral Flux: {avg_spectral_flux}\n")
+        f.write(f"Average Spectral Centroid: {avg_spectral_centroid}\n")
+        f.write(f"Spectral Kurtosis: {spec_kurtosis}\n")
+        f.write(f"Average ZCR: {avg_zcr}\n")
+        f.write(f"Crest Factor: {crest_factor}\n")
+
     
     # ----------------------- Categorization -----------------------
     # Using threshold criteria per your table:
@@ -224,10 +239,12 @@ def process_audio(file_path):
     
     print("Filter applied:", filter_used)
     
-    # Save filtered audio
-    sf.write("filtered_output.wav", filtered_audio, sr)
-    print("Filtered audio saved as 'filtered_output.wav'.")
-    
+    # Save filtered audio to output folder
+    output_dir = r"/mnt/c/Users/eqtng/Dropbox/SFSU/697/audio clips/filtered output"
+    os.makedirs(output_dir, exist_ok=True)
+    output_path = os.path.join(output_dir, "filtered_output.wav")
+    sf.write(output_path, filtered_audio, sr)
+
     return filtered_audio, sr
 
 # ----------------------- Main Execution -----------------------
@@ -239,3 +256,4 @@ if __name__ == "__main__":
     else:
         audio_file = sys.argv[1]
         process_audio(audio_file)
+ 
