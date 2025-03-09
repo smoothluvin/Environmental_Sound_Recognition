@@ -188,12 +188,11 @@ def process_audio(file_path):
     print("Average ZCR:", avg_zcr)
     print("Crest Factor:", crest_factor)
 
-    analysis_dir = "/mnt/c/Users/eqtng/Dropbox/SFSU/697/analysis_results"
+    analysis_dir = "/mnt/c/Users/eqtng/Dropbox/SFSU/697/audio clips/filtering analysis"
     os.makedirs(analysis_dir, exist_ok=True)
-
     analysis_file_path = os.path.join(analysis_dir, "analysis_results.txt")
 
-    with open("analysis_results.txt", "w") as f:
+    with open(analysis_file_path, "w") as f:
         f.write(f"Average STE: {avg_ste}\n")
         f.write(f"Average Spectral Flux: {avg_spectral_flux}\n")
         f.write(f"Average Spectral Centroid: {avg_spectral_centroid}\n")
@@ -240,7 +239,7 @@ def process_audio(file_path):
     print("Filter applied:", filter_used)
     
     # Save filtered audio to output folder
-    output_dir = r"/mnt/c/Users/eqtng/Dropbox/SFSU/697/audio clips/filtered output"
+    output_dir = "/mnt/c/Users/eqtng/Dropbox/SFSU/697/audio clips/filtered output"
     os.makedirs(output_dir, exist_ok=True)
     output_path = os.path.join(output_dir, "filtered_output.wav")
     sf.write(output_path, filtered_audio, sr)
