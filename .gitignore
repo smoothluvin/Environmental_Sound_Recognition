@@ -177,3 +177,7 @@ data/
 # Models
 models/
 .models
+
+# Results
+results/
+.results
