@@ -19,7 +19,7 @@ model.load_state_dict(torch.load("./models/sound_cnn.pth", map_location=device))
 model.eval()
 
 # Load and preprocess test audio
-audio_path = "data/Filtered_Dataset/gun_shot/174290-6-1-0.wav"
+audio_path = "data/Filtered_Dataset/glass_breaking/2-173559-A-39.wav"
 waveform = load_audio(audio_path)
 mel_spectrogram = extract_mel_spectrogram(waveform)
 mel_spectrogram = mel_spectrogram.unsqueeze(0).to(device)  # Add batch and channel dimensions

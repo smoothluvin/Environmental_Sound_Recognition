@@ -1,2 +1,2 @@
 # Setting a config.py folder to hold our target classes because I couldn't figure out a better way to link them. Will update this later
-TARGET_CLASSES = ["crying_baby", "glass_breaking", "gun_shot", "siren"]
+TARGET_CLASSES = ["crying_baby", "glass_breaking", "gun_shot", "siren", "Beep,_bleep", "Slam", "Smoke_detector,_smoke_alarm", "Yell", "Thump,_thud"]

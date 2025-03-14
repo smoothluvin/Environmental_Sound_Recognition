@@ -24,21 +24,38 @@ model = SoundCNN(num_classes=NUM_CLASSES).to(device)
 criterion = nn.CrossEntropyLoss()
 optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE)
 
-# Training Loop where epochs refer to the number of iterations we go through the dataset
+# Training Loop
 for epoch in range(EPOCHS):
+    model.train()
     running_loss = 0.0
+    correct = 0
+    total = 0
+    
     for inputs, labels in train_loader:
         inputs, labels = inputs.to(device), labels.to(device)
-
+        
+        # Forward pass
         optimizer.zero_grad()
         outputs = model(inputs)
         loss = criterion(outputs, labels)
+        
+        # Backward pass and optimize
         loss.backward()
         optimizer.step()
-
+        
+        # Calculate accuracy
+        _, predicted = torch.max(outputs.data, 1)
+        total += labels.size(0)
+        correct += (predicted == labels).sum().item()
+        
         running_loss += loss.item()
-
-        print(f"Epoch [{epoch+1}/{EPOCHS}], Loss: {running_loss/len(train_loader):.4f}")
+    
+    # Calculate epoch statistics
+    epoch_loss = running_loss / len(train_loader)
+    epoch_acc = 100 * correct / total
+    
+    # Print epoch statistics
+    print(f"Epoch [{epoch+1}/{EPOCHS}], Loss: {epoch_loss:.4f}, Accuracy: {epoch_acc:.2f}%")
 
 # For saving the model
 torch.save(model.state_dict(), "sound_cnn.pth")
