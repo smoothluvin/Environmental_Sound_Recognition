@@ -4,6 +4,7 @@ import torchaudio.transforms as T
 import torch.nn.functional as F
 import librosa
 import numpy as np
+from matplotlib import pyplot as plt
 from torch.utils.data import Dataset
 import os
 from config import TARGET_CLASSES # Importing class list from config.py
@@ -87,3 +88,122 @@ class AudioDataSet(Dataset):
             print(f"🚨 Error loading file {file_path}: {e}")
             return None  # Skip problematic filesfile_path, label = self.files[idx]
             
+# This section of audio_processing.py is for analyzing the waveforms in our dataset. What I want to accomplish by doing this
+# is to figure out dimensional and general statistical information about the audio files so that I can restructure the architecture of the
+# model to best fit the data. I'll be using this information to determine the number of layers, filters, and other hyperparameters
+
+def analyze_audio_features(audio_path):
+    """
+    Analyze the audio features of a given audio file
+    """
+
+    # First we want to load the audio file and extract the features from them
+    waveform = load_audio(audio_path)
+    mel_spectrogram = extract_mel_spectrogram(waveform)
+    mfccs = extract_mfcc(waveform)
+
+    # Print out the shapes of the features, first we start with the original waveform
+    print('\n ----- Audio Feature Analysis ----- \n')
+    print(f"Original Waveform shape: {waveform.shape}")
+    print(f"Sampling rate used: {SAMPLE_RATE}")
+
+    # Mel Spectrogram analysis
+    print('\n ----- Mel Spectrogram Analysis ----- \n')
+    print(f"Mel Spectrogram shape: {mel_spectrogram.shape}")
+    print(f"Number of Mel bins: {N_MELS}")
+    print(f"Time Frames: {mel_spectrogram.shape[2]}")
+
+    # Calculating actual frequency range from Mel Spectrogram
+    print(f"Frequency Range: 0 - ~{SAMPLE_RATE / 2} Hz")
+    print(f"Time Resolution: {mel_spectrogram.shape[2]} frames over ~{waveform.shape[1] / SAMPLE_RATE} seconds")
+    print(f"Time per frame: ~{(waveform.shape[1]/SAMPLE_RATE)/mel_spectrogram.shape[2]*1000:.2f} ms")
+    
+    # MFCC details
+    print("\n--- MFCC Analysis ---")
+    print(f"MFCC shape: {mfccs.shape}")
+    print(f"Number of MFCC coefficients: {mfccs.shape[0]}")
+    
+    # Visualize
+    plt.figure(figsize=(15, 10))
+    
+    # Plot waveform
+    plt.subplot(3, 1, 1)
+    plt.plot(waveform[0].numpy())
+    plt.title('Waveform')
+    plt.xlabel('Samples')
+    plt.ylabel('Amplitude')
+    
+    # Plot mel spectrogram
+    plt.subplot(3, 1, 2)
+    plt.imshow(librosa.power_to_db(mel_spectrogram[0].numpy()), aspect='auto', origin='lower')
+    plt.title('Mel Spectrogram')
+    plt.xlabel('Time Frames')
+    plt.ylabel('Mel Frequency Bins')
+    plt.colorbar(format='%+2.0f dB')
+    
+    # Plot MFCCs
+    plt.subplot(3, 1, 3)
+    plt.imshow(mfccs, aspect='auto', origin='lower')
+    plt.title('MFCCs')
+    plt.xlabel('Time Frames')
+    plt.ylabel('MFCC Coefficients')
+    plt.colorbar()
+    
+    plt.tight_layout()
+    plt.savefig('audio_features_analysis.png')
+    plt.show()
+    
+    # Calculate numerical stats
+    print("\n--- Numerical Statistics ---")
+    print(f"Mel Spectrogram - Min: {mel_spectrogram.min().item()}, Max: {mel_spectrogram.max().item()}")
+    print(f"Mel Spectrogram - Mean: {mel_spectrogram.mean().item()}, Std: {mel_spectrogram.std().item()}")
+    print(f"MFCC - Min: {np.min(mfccs)}, Max: {np.max(mfccs)}")
+    print(f"MFCC - Mean: {np.mean(mfccs)}, Std: {np.std(mfccs)}")
+    
+    return {
+        "waveform_shape": waveform.shape,
+        "mel_shape": mel_spectrogram.shape,
+        "mfcc_shape": mfccs.shape,
+        "sample_rate": SAMPLE_RATE,
+        "n_mels": N_MELS,
+        "max_frames": MAX_FRAMES
+    }
+
+# Use this function with a few example files
+def analyze_dataset(dataset_path, num_samples=5):
+    """
+    Analyze several files from the dataset to understand feature characteristics
+    """
+    # Get a list of classes from the directory structure
+    classes = [d for d in os.listdir(dataset_path) if os.path.isdir(os.path.join(dataset_path, d))]
+    
+    results = []
+    
+    for class_name in classes:
+        class_path = os.path.join(dataset_path, class_name)
+        files = [f for f in os.listdir(class_path) if f.endswith('.wav')]
+        
+        # Take a few samples from each class
+        samples = files[:min(num_samples, len(files))]
+        
+        for sample in samples:
+            file_path = os.path.join(class_path, sample)
+            print(f"\nAnalyzing file: {file_path}")
+            result = analyze_audio_features(file_path)
+            results.append(result)
+    
+    # Compute average shapes across samples
+    avg_mel_shape = tuple(np.mean([r["mel_shape"][i] for r in results], axis=0).astype(int) for i in range(len(results[0]["mel_shape"])))
+    avg_mfcc_shape = tuple(np.mean([r["mfcc_shape"][i] for r in results], axis=0).astype(int) for i in range(len(results[0]["mfcc_shape"])))
+    
+    print("\n--- Dataset Summary ---")
+    print(f"Average Mel Spectrogram shape: {avg_mel_shape}")
+    print(f"Average MFCC shape: {avg_mfcc_shape}")
+    
+    return results
+
+# Example usage
+if __name__ == "__main__":
+    # Replace with your dataset path
+    dataset_path = "./data/Filtered_Dataset"
+    results = analyze_dataset(dataset_path)
