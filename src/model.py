@@ -49,11 +49,15 @@ class SoundCNN(nn.Module):
                 if m.bias is not None:
                     nn.init.zeros_(m.bias) # This initializes 0 for the biases
 
-
+    # Forward propogation function for the model
     def forward(self, x):
         # First conv block
         x = self.pool1(F.relu(self.bn1(self.conv1(x))))
+
+        # Second conv block
         x = self.pool2(F.relu(self.bn2(self.conv2(x))))
+
+        ## Third conv block
         x = self.pool3(F.relu(self.bn3(self.conv3(x))))
 
         x = x.view(x.size(0), -1) # Flatten the tensor
