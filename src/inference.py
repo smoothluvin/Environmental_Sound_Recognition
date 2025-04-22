@@ -67,7 +67,7 @@ def load_model(model_path, device, use_mel=True, use_mfcc=False):
             
             # Recreate the model with the correct input shape
             feature_dim = saved_input_shape[1]
-            model = SoundCNN(input_shape=saved_input_shape, num_classes=len(TARGET_CLASSES)).to(device)
+            model = SoundCNN(input_shape=saved_input_shape, num_classes=len(TARGET_CLASSES_MUSIC)).to(device)
             model.load_state_dict(checkpoint['model_state_dict'])
             
             # Update the feature flags to match the saved model
