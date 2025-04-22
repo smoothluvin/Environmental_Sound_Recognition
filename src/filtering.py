@@ -239,7 +239,7 @@ def process_audio(file_path):
     print("Filter applied:", filter_used)
     
     # Save filtered audio to output folder
-    output_dir = "/mnt/c/Users/eqtng/Dropbox/SFSU/697/audio clips/filtered output"
+    output_dir = "./data/"
     os.makedirs(output_dir, exist_ok=True)
     output_path = os.path.join(output_dir, "filtered_output.wav")
     sf.write(output_path, filtered_audio, sr)
@@ -251,7 +251,7 @@ def process_audio(file_path):
 if __name__ == "__main__":
     import sys
     if len(sys.argv) < 2:
-        print("Usage: python process_audio.py <audio_file_path>")
+        print("Usage: python filtering.py <audio_file_path>")
     else:
         audio_file = sys.argv[1]
         process_audio(audio_file)
