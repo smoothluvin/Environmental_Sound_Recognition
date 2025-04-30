@@ -42,7 +42,7 @@ def load_model(model_path, device, use_mel=True, use_mfcc=False):
     if use_mfcc:
         feature_dim += 20  # N_MFCC
     
-    input_shape = (1, feature_dim, 800)  # Channels, Features, Time frames
+    input_shape = (1, feature_dim, 336)  # Channels, Features, Time frames
     print(f"Using features: Mel Spectrogram = {use_mel}, MFCC = {use_mfcc}")
     print(f"Input shape: {input_shape}")
     

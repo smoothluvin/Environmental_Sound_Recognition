@@ -8,7 +8,7 @@ import os
 import argparse
 from audio_processing import AudioDataSet
 from cnn import SoundCNN
-from config import TARGET_CLASSES_MUSIC
+from config import TARGET_CLASSES_MUSIC, MAX_FRAMES
 
 def train_model(args):
     # Create directories for saving results
@@ -22,11 +22,11 @@ def train_model(args):
     if args.use_mfcc:
         feature_dim += 20  # N_MFCC
     
-    input_shape = (1, feature_dim, 800)  # Channels, Features, Time frames
+    input_shape = (1, feature_dim, MAX_FRAMES)  # Channels, Features, Time frames
     print(f"Using features: Mel Spectrogram = {args.use_mel}, MFCC = {args.use_mfcc}")
     print(f"Input shape: {input_shape}")
     
-    # Load training dataset only
+    # Load training dataset and extracting features based on terminal argument
     train_path = os.path.join(args.data_dir, 'train')
     print(f"Loading training data from: {train_path}")
     train_dataset = AudioDataSet(root_dir=train_path, use_mel=args.use_mel, use_mfcc=args.use_mfcc)

@@ -4,13 +4,7 @@ import torchaudio.transforms as T
 import torch.nn.functional as F
 import os
 from torch.utils.data import Dataset
-from config import TARGET_CLASSES_MUSIC
-
-# Default Audio Settings
-SAMPLE_RATE = 16000
-N_MELS = 64
-MAX_FRAMES = 800
-N_MFCC = 20  # Number of MFCC coefficients
+from config import TARGET_CLASSES_MUSIC, SAMPLE_RATE, MAX_FRAMES, N_MELS, N_MFCC
 
 def load_audio(audio_path, target_sr=SAMPLE_RATE):
     """
