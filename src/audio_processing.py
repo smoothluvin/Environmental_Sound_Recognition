@@ -182,4 +182,26 @@ class AudioDataSet(Dataset):
                 return torch.zeros(1, N_MELS, MAX_FRAMES), label
             else:  # use_mfcc only
                 return torch.zeros(1, N_MFCC, MAX_FRAMES), label
+
+def extract_features_from_file(file_path, use_mel=True, use_mfcc=True):
+    """
+    Standalone feature extractor for inference from a file path.
+    """
+    waveform = load_audio(file_path)
+    features = []
+
+    if use_mel:
+        mel = extract_mel_spectrogram(waveform)
+        features.append(mel)
+
+    if use_mfcc:
+        mfcc = extract_mfcc(waveform)
+        features.append(mfcc)
+
+    if len(features) > 1:
+        return torch.cat(features, dim=1)
+    elif len(features) == 1:
+        return features[0]
+    else:
+        raise ValueError("No features selected (use_mel or use_mfcc must be True)")
             

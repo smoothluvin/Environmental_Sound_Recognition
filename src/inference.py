@@ -1,308 +1,340 @@
-import torch
-import torch.nn as nn
-import torchaudio
-import numpy as np
 import os
-import matplotlib.pyplot as plt
-import seaborn as sns
-from sklearn.metrics import confusion_matrix, classification_report, accuracy_score
-from tqdm import tqdm
-from torch.utils.data import DataLoader
-from audio_processing import load_audio, extract_mel_spectrogram, extract_mfcc, AudioDataSet
-from cnn import SoundCNN
-from config import TARGET_CLASSES_MUSIC
-import argparse
-import pandas as pd
 import time
+import torch
+import torch.nn.functional as F
+import numpy as np
+import pyaudio
+import datetime
+import soundfile as sf
+import argparse
+import threading
+import ctypes
+import subprocess
 
-def parse_args():
-    parser = argparse.ArgumentParser(description='Test a trained audio classification model')
-    parser.add_argument('--model_path', type=str, default='./models/best_model.pth', 
-                        help='Path to the trained model')
-    parser.add_argument('--data_dir', type=str, default='./data/Music/val',
-                        help='Directory containing validation audio files')
-    parser.add_argument('--batch_size', type=int, default=16, 
-                        help='Batch size for testing')
-    parser.add_argument('--output_dir', type=str, default='./results',
-                        help='Directory to save test results')
-    parser.add_argument('--single_file', type=str, default=None,
-                        help='Path to a single audio file for prediction')
-    parser.add_argument('--use_mel', action='store_true', default=True,
-                        help='Use Mel spectrogram features')
-    parser.add_argument('--use_mfcc', action='store_true', default=False,
-                        help='Use MFCC features')
-    return parser.parse_args()
+from cnn import SoundCNN
+from config import TARGET_CLASSES_MUSIC, SAMPLE_RATE, N_MELS, N_MFCC, MAX_FRAMES
+from audio_processing import extract_features_from_file
+# Import filtering module but don't use it
+# from filtering import process_audio
 
-def load_model(model_path, device, use_mel=True, use_mfcc=False):
-    """Load the trained model."""
-    # Determine input shape based on feature configuration
-    feature_dim = 0
-    if use_mel:
-        feature_dim += 64  # N_MELS
-    if use_mfcc:
-        feature_dim += 20  # N_MFCC
-    
-    input_shape = (1, feature_dim, 336)  # Channels, Features, Time frames
-    print(f"Using features: Mel Spectrogram = {use_mel}, MFCC = {use_mfcc}")
-    print(f"Input shape: {input_shape}")
-    
-    # Create model instance
-    model = SoundCNN(input_shape=input_shape, num_classes=len(TARGET_CLASSES_MUSIC)).to(device)
-    
-    # Load the saved model state - handle both full checkpoints and state_dict only saves
-    checkpoint = torch.load(model_path, map_location=device)
-    if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
-        model.load_state_dict(checkpoint['model_state_dict'])
-        epoch = checkpoint.get('epoch', 'unknown')
-        val_acc = checkpoint.get('val_acc', 'unknown')
+# Suppress ALSA warnings
+asound = ctypes.CDLL('libasound.so')
+asound.snd_lib_error_set_handler(ctypes.CFUNCTYPE(None, ctypes.c_char_p)(lambda x: None))
+
+class RealTimeAudioProcessor:
+    def __init__(self, device_index=None, sample_rate=44100, target_sample_rate=16000, window_duration=3.0):
+        self.device_sample_rate = sample_rate
+        self.target_sample_rate = target_sample_rate
+        self.window_duration = window_duration
+        self.device_index = device_index
         
-        # Check if the checkpoint has feature configuration
-        saved_use_mel = checkpoint.get('use_mel', use_mel)
-        saved_use_mfcc = checkpoint.get('use_mfcc', use_mfcc)
-        saved_input_shape = checkpoint.get('input_shape', input_shape)
+        # List available audio capture devices
+        self.list_audio_devices()
         
-        if saved_input_shape != input_shape:
-            print(f"Warning: Current input shape {input_shape} doesn't match saved model input shape {saved_input_shape}")
-            print(f"Using saved model configuration: Mel={saved_use_mel}, MFCC={saved_use_mfcc}")
+        # If device_index is None, attempt to find a USB audio device
+        if self.device_index is None:
+            self.find_usb_audio_device()
+
+    def list_audio_devices(self):
+        """List available audio devices using arecord"""
+        try:
+            print("\nAvailable audio capture devices:")
+            result = subprocess.run(["arecord", "-l"], capture_output=True, text=True, check=False)
+            if result.returncode == 0:
+                print(result.stdout)
+            else:
+                print(f"Error listing devices: {result.stderr}")
+        except Exception as e:
+            print(f"Failed to list audio devices: {e}")
+
+    def find_usb_audio_device(self):
+        """Attempt to find a USB audio device from the arecord -l output"""
+        try:
+            result = subprocess.run(["arecord", "-l"], capture_output=True, text=True, check=False)
+            if result.returncode == 0:
+                # Parse the output to find USB audio devices
+                lines = result.stdout.split('\n')
+                for line in lines:
+                    if 'USB Audio' in line and 'card' in line:
+                        # Extract card number
+                        card_info = line.split(':')[0]
+                        card_num = card_info.split('card ')[1].strip()
+                        self.device_index = int(card_num)
+                        print(f"Automatically selected USB Audio Device at card {self.device_index}")
+                        return
+                
+                # If no USB Audio device found, use card 0 as default
+                print("No USB Audio Device found. Using default card 0.")
+                self.device_index = 0
+            else:
+                print(f"Error finding USB audio device: {result.stderr}")
+                print("Defaulting to card 0")
+                self.device_index = 0
+        except Exception as e:
+            print(f"Failed to find USB audio device: {e}")
+            print("Defaulting to card 0")
+            self.device_index = 0
+
+    def record_audio_arecord(self, output_path="temp_arecord.wav"):
+        """Record audio using arecord at 16000Hz sample rate"""
+        # Ensure the device_index is not None and is a valid integer
+        if self.device_index is None:
+            self.device_index = 0  # Default to card 0 if not set
             
-            # Recreate the model with the correct input shape
-            feature_dim = saved_input_shape[1]
-            model = SoundCNN(input_shape=saved_input_shape, num_classes=len(TARGET_CLASSES_MUSIC)).to(device)
-            model.load_state_dict(checkpoint['model_state_dict'])
-            
-            # Update the feature flags to match the saved model
-            return model, saved_use_mel, saved_use_mfcc
+        device_str = f"plughw:{self.device_index},0"
+        duration = self.window_duration
         
-        print(f"Loaded checkpoint from epoch {epoch} with validation accuracy {val_acc}%")
-    else:
-        model.load_state_dict(checkpoint)
-        print("Loaded model state dict")
-    
-    model.eval()
-    return model, use_mel, use_mfcc
-
-def predict_single_file(model, audio_path, device, use_mel=True, use_mfcc=False):
-    """Make prediction for a single audio file."""
-    waveform = load_audio(audio_path)
-    
-    features = []
-    if use_mel:
-        mel_spectrogram = extract_mel_spectrogram(waveform)
-        features.append(mel_spectrogram)
-    
-    if use_mfcc:
-        mfccs = extract_mfcc(waveform)
-        features.append(mfccs)
-    
-    # Combine features if using both
-    if len(features) > 1:
-        combined_features = torch.cat(features, dim=1)
-    else:
-        combined_features = features[0]
-    
-    combined_features = combined_features.unsqueeze(0).to(device)  # Add batch dimension
-    
-    with torch.no_grad():
-        output = model(combined_features)
-        probabilities = torch.nn.functional.softmax(output, dim=1)
-        predicted_class_idx = torch.argmax(output, dim=1).item()
-    
-    predicted_class_name = TARGET_CLASSES_MUSIC[predicted_class_idx]
-    confidence_scores = {class_name: score.item() for class_name, score in zip(TARGET_CLASSES_MUSIC, probabilities[0])}
-    
-    return predicted_class_name, confidence_scores
-
-def evaluate_model(model, test_loader, device):
-    """Evaluate model on test dataset."""
-    all_preds = []
-    all_labels = []
-    all_probs = []
-    correct = 0
-    total = 0
-    
-    with torch.no_grad():
-        for inputs, labels in tqdm(test_loader, desc="Evaluating"):
-            inputs, labels = inputs.to(device), labels.to(device)
-            outputs = model(inputs)
-            probs = torch.nn.functional.softmax(outputs, dim=1)
-            _, predicted = torch.max(outputs.data, 1)
-            
-            total += labels.size(0)
-            correct += (predicted == labels).sum().item()
-            
-            all_preds.extend(predicted.cpu().numpy())
-            all_labels.extend(labels.cpu().numpy())
-            all_probs.extend(probs.cpu().numpy())
-    
-    accuracy = 100 * correct / total if total > 0 else 0.0
-    return accuracy, all_preds, all_labels, all_probs
-
-def plot_confusion_matrix(y_true, y_pred, class_names, output_dir):
-    """Plot and save confusion matrix."""
-    cm = confusion_matrix(y_true, y_pred)
-    plt.figure(figsize=(10, 8))
-    sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', xticklabels=class_names, yticklabels=class_names)
-    plt.xlabel('Predicted')
-    plt.ylabel('True')
-    plt.title('Confusion Matrix')
-    
-    os.makedirs(output_dir, exist_ok=True)
-    plt.savefig(os.path.join(output_dir, 'confusion_matrix.png'))
-    plt.close()
-
-def plot_class_accuracy(y_true, y_pred, class_names, output_dir):
-    """Plot and save per-class accuracy."""
-    class_accuracy = {}
-    for i, class_name in enumerate(class_names):
-        class_indices = [j for j, label in enumerate(y_true) if label == i]
-        if len(class_indices) > 0:
-            correct = sum(1 for j in class_indices if y_pred[j] == i)
-            class_accuracy[class_name] = 100 * correct / len(class_indices)
-        else:
-            class_accuracy[class_name] = 0
-    
-    plt.figure(figsize=(12, 6))
-    sns.barplot(x=list(class_accuracy.keys()), y=list(class_accuracy.values()))
-    plt.xlabel('Class')
-    plt.ylabel('Accuracy (%)')
-    plt.title('Per-Class Accuracy')
-    plt.xticks(rotation=45, ha='right')
-    plt.tight_layout()
-    
-    plt.savefig(os.path.join(output_dir, 'class_accuracy.png'))
-    plt.close()
-    
-    return class_accuracy
-
-def save_metrics(accuracy, class_report, class_accuracy, all_probs, output_dir):
-    """Save all metrics to files."""
-    metrics = {
-        'overall_accuracy': accuracy,
-        'per_class_accuracy': class_accuracy
-    }
-    
-    # Save metrics to CSV
-    metrics_df = pd.DataFrame([metrics['overall_accuracy']], columns=['Overall Accuracy'])
-    for class_name, acc in metrics['per_class_accuracy'].items():
-        metrics_df[f"{class_name} Accuracy"] = acc
-    
-    os.makedirs(output_dir, exist_ok=True)
-    metrics_df.to_csv(os.path.join(output_dir, 'accuracy_metrics.csv'), index=False)
-    
-    # Save classification report
-    with open(os.path.join(output_dir, 'classification_report.txt'), 'w') as f:
-        f.write(class_report)
-    
-    # Save mean confidence scores per class
-    mean_probs = np.mean(all_probs, axis=0)
-    prob_df = pd.DataFrame({
-        'Class': TARGET_CLASSES_MUSIC,
-        'Mean Confidence': mean_probs
-    })
-    prob_df.to_csv(os.path.join(output_dir, 'confidence_scores.csv'), index=False)
-
-def plot_confidence_distribution(all_probs, all_preds, all_labels, class_names, output_dir):
-    """Plot confidence score distributions for correct and incorrect predictions."""
-    correct_probs = []
-    incorrect_probs = []
-    
-    for i in range(len(all_preds)):
-        pred = all_preds[i]
-        label = all_labels[i]
-        prob = all_probs[i][pred]  # Confidence score for the predicted class
+        # Explicitly set format to 16-bit signed little-endian at 16000Hz
+        cmd = [
+            "arecord",
+            "-D", device_str,
+            "-f", "S16_LE",        # 16-bit signed little-endian format
+            "-r", "16000",         # 16kHz sample rate (matching your model)
+            "-c", "1",             # Mono
+            "-t", "wav",
+            "-d", str(int(duration)),
+            output_path
+        ]
         
-        if pred == label:
-            correct_probs.append(prob)
-        else:
-            incorrect_probs.append(prob)
-    
-    plt.figure(figsize=(10, 6))
-    plt.hist(correct_probs, bins=20, alpha=0.5, label='Correct Predictions')
-    plt.hist(incorrect_probs, bins=20, alpha=0.5, label='Incorrect Predictions')
-    plt.xlabel('Confidence Score')
-    plt.ylabel('Count')
-    plt.title('Confidence Score Distribution')
-    plt.legend()
-    
-    plt.savefig(os.path.join(output_dir, 'confidence_distribution.png'))
-    plt.close()
+        print(f"[arecord] Capturing {duration} seconds using: {' '.join(cmd)}")
+        
+        try:
+            subprocess.run(cmd, check=True)
+            print(f"[arecord] Saved to: {output_path}")
+            
+            # Verify the recorded file
+            info = sf.info(output_path)
+            print(f"[arecord] Recording info: {info.samplerate}Hz, {info.channels} channels, {info.frames} frames, {info.duration:.2f} seconds")
+            
+        except subprocess.CalledProcessError as e:
+            print(f"[arecord] Error recording audio: {e}")
+            raise
+
+    def get_audio(self):
+        """Record audio and read it into numpy array"""
+        try:
+            # Record audio at the correct sample rate
+            self.record_audio_arecord("temp_arecord.wav")
+            
+            # Read the recorded audio
+            audio_data, sample_rate = sf.read("temp_arecord.wav")
+            
+            # Verify sample rate
+            if sample_rate != self.target_sample_rate:
+                print(f"[Warning] Recorded sample rate ({sample_rate}Hz) differs from expected ({self.target_sample_rate}Hz)")
+                # No need to resample since we're explicitly recording at 16000Hz
+            
+            # If the recording is stereo, convert to mono
+            if len(audio_data.shape) > 1 and audio_data.shape[1] > 1:
+                audio_data = np.mean(audio_data, axis=1)
+            
+            # Verify the audio length matches our expectation
+            expected_samples = int(self.window_duration * self.target_sample_rate)
+            actual_samples = len(audio_data)
+            
+            if abs(expected_samples - actual_samples) > 100:  # Allow slight variation
+                print(f"[Warning] Audio length ({actual_samples} samples) differs from expected ({expected_samples} samples)")
+                print(f"[Warning] Duration: {actual_samples/self.target_sample_rate:.2f}s vs expected {self.window_duration:.2f}s")
+            
+            return audio_data.astype(np.float32)
+            
+        except Exception as e:
+            print(f"[Error] Failed to get audio: {e}")
+            # Return a silent buffer instead of crashing
+            return np.zeros(int(self.window_duration * self.target_sample_rate), dtype=np.float32)
+
+class AudioInference:
+    def __init__(self, model_path, use_mel=True, use_mfcc=True, threshold=0.5, device_index=None):
+        # Create directory for logged audio
+        os.makedirs("./logged_audio", exist_ok=True)
+        
+        self.device = torch.device("cpu")
+        print(f"Using device: {self.device}")
+
+        checkpoint = torch.load(model_path, map_location=self.device)
+        self.input_shape = checkpoint.get('input_shape', (1, 84, MAX_FRAMES))
+        self.use_mel = checkpoint.get('use_mel', use_mel)
+        self.use_mfcc = checkpoint.get('use_mfcc', use_mfcc)
+
+        print(f"Model input shape: {self.input_shape}")
+        print(f"Using features: Mel Spectrogram = {self.use_mel}, MFCC = {self.use_mfcc}")
+
+        self.model = SoundCNN(input_shape=self.input_shape)
+        self.model.load_state_dict(checkpoint['model_state_dict'])
+        self.model.to(self.device)
+        self.model.eval()
+
+        self.audio_processor = RealTimeAudioProcessor(
+            device_index=device_index,
+            sample_rate=16000,  # Set the desired recording sample rate to match the model
+            target_sample_rate=SAMPLE_RATE,
+            window_duration=3.0
+        )
+
+        self.threshold = threshold
+        self.running = False
+        self.thread = None
+
+    def inference_thread(self):
+        """Thread function to process audio and make predictions"""
+        prediction_interval = self.audio_processor.window_duration
+        last_prediction_time = 0
+        
+        while self.running:
+            current_time = time.time()
+            
+            # Process audio every interval seconds
+            if current_time - last_prediction_time >= prediction_interval:
+                try:
+                    # Get audio from the processor
+                    audio_data = self.audio_processor.get_audio()
+                    
+                    # Extract features
+                    features = self.extract_features(audio_data)
+                    
+                    if features is not None:
+                        print(f"Feature shape before model: {features.shape}")
+                        
+                        # Make prediction
+                        with torch.no_grad():
+                            outputs = self.model(features)
+                            probabilities = F.softmax(outputs, dim=1)[0]
+                            confidence, predicted_idx = torch.max(probabilities, 0)
+                            class_name = TARGET_CLASSES_MUSIC[predicted_idx.item()]
+                            confidence_value = confidence.item()
+                            
+                            # Display prediction if confidence exceeds threshold
+                            if confidence_value >= self.threshold:
+                                print(f"Detected: {class_name} ({confidence_value:.2f})")
+                    
+                    last_prediction_time = current_time
+                except Exception as e:
+                    print(f"Error in inference thread: {e}")
+                    time.sleep(1)  # Wait a bit before trying again
+            
+            time.sleep(0.1)
+
+        print("Inference thread exiting.")
+
+    def start(self):
+        """Start real-time inference"""
+        self.running = True
+        self.thread = threading.Thread(target=self.inference_thread)
+        self.thread.daemon = True
+        self.thread.start()
+        
+        print("Starting real-time inference. Press Ctrl+C to stop.")
+        
+        try:
+            # Keep running until interrupted
+            while self.running:
+                time.sleep(0.1)
+        except KeyboardInterrupt:
+            print("Stopping inference.")
+        finally:
+            self.stop()
+
+    def stop(self):
+        """Stop inference"""
+        self.running = False
+        if self.thread:
+            self.thread.join(timeout=1.0)
+
+    def extract_features(self, audio_data):
+        """Extract features from raw audio data without filtering"""
+        try:
+            if not np.all(np.isfinite(audio_data)):
+                print("[Error] Audio buffer is not finite everywhere.")
+                return None
+
+            # Save audio data to temporary file
+            temp_file = "_temp_inference.wav"
+            sf.write(temp_file, audio_data, SAMPLE_RATE, subtype='PCM_16')
+
+            # Generate timestamp for logging
+            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            
+            # Save raw audio for manual inspection
+            raw_path = f"./logged_audio/raw_{timestamp}.wav"
+            sf.write(raw_path, audio_data, SAMPLE_RATE, subtype='PCM_16')
+            print(f"[Saved] Logged raw audio to: {raw_path}")
+            
+            # Extract features directly from the raw audio
+            features = extract_features_from_file(temp_file, use_mel=self.use_mel, use_mfcc=self.use_mfcc)
+            
+            # Clean up temporary file
+            os.remove(temp_file)
+            
+            # Return features tensor
+            return features.unsqueeze(0).to(self.device) if features is not None else None
+            
+        except Exception as e:
+            print(f"Error extracting features: {e}")
+            return None
+
+    def process_file(self, file_path):
+        """Process an audio file and return the prediction"""
+        try:
+            if not os.path.exists(file_path):
+                print(f"File not found: {file_path}")
+                return None
+                
+            # Extract features directly from the file
+            features = extract_features_from_file(file_path, use_mel=self.use_mel, use_mfcc=self.use_mfcc)
+            
+            if features is None:
+                return None
+                
+            # Reshape features for model input
+            features = features.unsqueeze(0).to(self.device)
+            
+            # Make prediction
+            with torch.no_grad():
+                outputs = self.model(features)
+                probabilities = F.softmax(outputs, dim=1)[0]
+                confidence, predicted_idx = torch.max(probabilities, 0)
+                
+                class_name = TARGET_CLASSES_MUSIC[predicted_idx.item()]
+                confidence_value = confidence.item()
+                
+                return class_name, confidence_value
+                
+        except Exception as e:
+            print(f"Error processing file: {e}")
+            return None
 
 def main():
-    args = parse_args()
+    parser = argparse.ArgumentParser(description='Real-time audio classification')
+    parser.add_argument('--model', type=str, default='./models/Music_Models/best_model.pth', 
+                        help='Path to the saved model file')
+    parser.add_argument('--device', type=int, default=None, 
+                        help='Index of the audio input device to use')
+    parser.add_argument('--file', type=str, default=None, 
+                        help='Path to an audio file to classify (instead of using microphone)')
+    parser.add_argument('--threshold', type=float, default=0.5, 
+                        help='Confidence threshold for predictions')
     
-    # Create output directory
-    os.makedirs(args.output_dir, exist_ok=True)
+    args = parser.parse_args()
     
-    # Set device
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Using device: {device}")
+    # Initialize the audio inference system
+    inference = AudioInference(
+        model_path=args.model,
+        device_index=args.device,
+        threshold=args.threshold
+    )
     
-    # Load model
-    model, use_mel, use_mfcc = load_model(args.model_path, device, args.use_mel, args.use_mfcc)
-    print(f"Model loaded from {args.model_path}")
-    
-    # Single file prediction
-    if args.single_file:
-        if not os.path.exists(args.single_file):
-            print(f"Error: File {args.single_file} does not exist.")
-            return
-        
-        start_time = time.time()
-        predicted_class, confidence_scores = predict_single_file(model, args.single_file, device, use_mel, use_mfcc)
-        inference_time = time.time() - start_time
-        
-        print(f"\nPredicted Sound Class: {predicted_class}")
-        print(f"Inference Time: {inference_time*1000:.2f} ms")
-        print("Confidence Scores:")
-        for class_name, score in sorted(confidence_scores.items(), key=lambda x: x[1], reverse=True):
-            print(f"   - {class_name}: {score:.4f}")
-        
-        return
-    
-    # Load validation dataset with same features as the model
-    test_dataset = AudioDataSet(root_dir=args.data_dir, use_mel=use_mel, use_mfcc=use_mfcc)
-    test_loader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False)
-    print(f"Testing on {len(test_dataset)} validation samples")
-    
-    # Check if the validation dataset has samples
-    if len(test_dataset) == 0:
-        print("Warning: Validation dataset is empty. Please check the path.")
-        return
-    
-    # Evaluate model
-    accuracy, all_preds, all_labels, all_probs = evaluate_model(model, test_loader, device)
-    
-    # Generate classification report
-    class_report = classification_report(all_labels, all_preds, target_names=TARGET_CLASSES_MUSIC)
-    
-    # Plot confusion matrix
-    plot_confusion_matrix(all_labels, all_preds, TARGET_CLASSES_MUSIC, args.output_dir)
-    
-    # Plot and calculate per-class accuracy
-    class_accuracy = plot_class_accuracy(all_labels, all_preds, TARGET_CLASSES_MUSIC, args.output_dir)
-    
-    # Plot confidence distribution
-    plot_confidence_distribution(all_probs, all_preds, all_labels, TARGET_CLASSES_MUSIC, args.output_dir)
-    
-    # Save metrics
-    save_metrics(accuracy, class_report, class_accuracy, all_probs, args.output_dir)
-    
-    # Print summary
-    print(f"\nOverall Accuracy: {accuracy:.2f}%")
-    print("\nClassification Report:")
-    print(class_report)
-    print(f"\nResults saved to {args.output_dir}")
-
-    # Check if any class has no samples in validation set
-    class_counts = {TARGET_CLASSES_MUSIC[i]: 0 for i in range(len(TARGET_CLASSES_MUSIC))}
-    for label in all_labels:
-        class_counts[TARGET_CLASSES_MUSIC[label]] += 1
-    
-    empty_classes = [class_name for class_name, count in class_counts.items() if count == 0]
-    if empty_classes:
-        print("\nWarning: The following classes have no samples in the validation set:")
-        for class_name in empty_classes:
-            print(f"   - {class_name}")
+    # Either process a file or start real-time inference
+    if args.file:
+        print(f"Processing file: {args.file}")
+        result = inference.process_file(args.file)
+        if result:
+            class_name, confidence = result
+            print(f"Prediction: {class_name} with confidence {confidence:.2f}")
+        else:
+            print("Could not make a prediction for this file.")
+    else:
+        # Start real-time inference with the microphone
+        inference.start()
 
 if __name__ == "__main__":
     main()

@@ -188,7 +188,7 @@ def process_audio(file_path):
     print("Average ZCR:", avg_zcr)
     print("Crest Factor:", crest_factor)
 
-    analysis_dir = "/mnt/c/Users/eqtng/Dropbox/SFSU/697/audio clips/filtering analysis"
+    analysis_dir = "./filtering analysis"
     os.makedirs(analysis_dir, exist_ok=True)
     analysis_file_path = os.path.join(analysis_dir, "analysis_results.txt")
 
