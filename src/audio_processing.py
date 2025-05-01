@@ -124,7 +124,7 @@ def extract_mfcc(waveform, sample_rate=SAMPLE_RATE, n_mfcc=N_MFCC, max_frames=MA
         # Return dummy MFCCs of appropriate dimensions
         return torch.zeros(1, n_mfcc, max_frames)
 
-def apply_augmentation(waveform, mode='train'):
+def apply_augmentation(waveform, mode='train', label=None, class_mapping=None):
     """
     Apply data augmentation to audio waveform during training
     """
@@ -133,6 +133,13 @@ def apply_augmentation(waveform, mode='train'):
         
     # Original waveform dimensions
     channels, samples = waveform.shape
+    
+    # Special handling for instruments vs background noise
+    is_background = False
+    if label is not None and class_mapping is not None:
+        bg_idx = class_mapping.get("background_noise")
+        if bg_idx is not None and label == bg_idx:
+            is_background = True
     
     # Random volume change (0.75-1.25)
     if random.random() > 0.5:
@@ -146,7 +153,17 @@ def apply_augmentation(waveform, mode='train'):
             waveform = F.pad(waveform[:, :-shift_amount], (shift_amount, 0))
         else:  # Shift left
             waveform = F.pad(waveform[:, shift_amount:], (0, shift_amount))
-            
+    
+    # For instruments: sometimes add background noise
+    if not is_background and random.random() > 0.6:
+        noise_level = random.uniform(0.05, 0.2)
+        noise = torch.randn_like(waveform) * noise_level
+        waveform = waveform * 0.8 + noise * 0.2
+    
+    # For background noise: sometimes reduce level
+    if is_background and random.random() > 0.5:
+        waveform = waveform * random.uniform(0.5, 0.9)
+        
     # Add small amount of random noise (SNR between 20-40dB)
     if random.random() > 0.5:
         noise_level = 10 ** (-random.uniform(20, 40) / 20)
@@ -219,7 +236,7 @@ class AudioDataSet(Dataset):
             
             # Apply augmentation if in training mode
             if self.mode == 'train':
-                waveform = apply_augmentation(waveform, self.mode)
+                waveform = apply_augmentation(waveform, self.mode, label, self.class_mapping)
             
             features = []
             

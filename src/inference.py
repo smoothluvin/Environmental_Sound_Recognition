@@ -295,8 +295,8 @@ class AudioInference:
                             # Get top 2 predictions for debugging
                             confidences, indices = torch.topk(probabilities, 2)
                             
-                            # Get primary prediction
-                            confidence, predicted_idx = confidences[0].item(), indices[0].item()
+                            # Use two-stage prediction
+                            predicted_idx, confidence = self.two_stage_predict(features)
                             class_name = TARGET_CLASSES_MUSIC[predicted_idx]
                             
                             # Get second-best prediction
@@ -445,6 +445,36 @@ class AudioInference:
         except Exception as e:
             print(f"Error processing file: {e}")
             return None
+        
+    def two_stage_predict(self, features):
+        """
+        First determine if it's an instrument vs non-instrument
+        Then classify specific class
+        """
+        with torch.no_grad():
+            outputs = self.model(features.unsqueeze(0).to(self.device))
+            probs = calibrated_softmax(outputs, temperature=1.5)[0]
+        
+            # Get background noise and silence probabilities
+            bg_idx = TARGET_CLASSES_MUSIC.index("background_noise")
+            silence_idx = TARGET_CLASSES_MUSIC.index("silence")
+            bg_prob = probs[bg_idx]
+            silence_prob = probs[silence_idx]
+        
+            # If background noise probability is very high, check second prediction
+            if bg_prob > 0.75:
+                # Get second highest prediction
+                probs_copy = probs.clone()
+                probs_copy[bg_idx] = 0  # Zero out background_noise
+                second_conf, second_idx = torch.max(probs_copy, 0)
+            
+                # If second prediction is strong enough, return it instead
+                if second_conf > 0.2:
+                    return second_idx.item(), second_conf.item()
+                
+            # Return the normal prediction
+            conf, pred_idx = torch.max(probs, 0)
+            return pred_idx.item(), conf.item()
 
 def main():
     parser = argparse.ArgumentParser(description='Real-time audio classification')
