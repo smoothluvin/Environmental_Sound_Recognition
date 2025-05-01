@@ -10,10 +10,11 @@ import argparse
 import threading
 import ctypes
 import subprocess
+from collections import deque
 
 from cnn import SoundCNN
 from config import TARGET_CLASSES_MUSIC, SAMPLE_RATE, N_MELS, N_MFCC, MAX_FRAMES
-from audio_processing import extract_features_from_file
+from audio_processing import extract_features_from_file, extract_features_from_waveform, normalize_waveform
 # Import filtering module but don't use it
 # from filtering import process_audio
 
@@ -143,6 +144,74 @@ class RealTimeAudioProcessor:
             # Return a silent buffer instead of crashing
             return np.zeros(int(self.window_duration * self.target_sample_rate), dtype=np.float32)
 
+class PredictionSmoother:
+    def __init__(self, window_size=5, threshold=0.7):
+        """
+        Initialize a prediction smoother to filter out noise in the predictions
+        
+        Args:
+            window_size: Number of predictions to consider
+            threshold: Minimum proportion of predictions for a class to be considered valid
+        """
+        self.window_size = window_size
+        self.threshold = threshold
+        self.recent_predictions = deque(maxlen=window_size)
+        self.class_thresholds = {}  # Store class-specific thresholds
+    
+    def update_class_threshold(self, class_idx, confidence):
+        """Update running average of confidence for a class"""
+        if class_idx not in self.class_thresholds:
+            self.class_thresholds[class_idx] = confidence
+        else:
+            # Exponential moving average with alpha=0.3
+            alpha = 0.3
+            self.class_thresholds[class_idx] = alpha * confidence + (1 - alpha) * self.class_thresholds[class_idx]
+    
+    def get_smoothed_prediction(self, class_idx, confidence):
+        """
+        Add current prediction and return smoothed result
+        
+        Returns:
+            tuple of (class_idx, confidence) or None if no stable prediction
+        """
+        # Update class threshold
+        self.update_class_threshold(class_idx, confidence)
+        
+        # Add current prediction
+        self.recent_predictions.append((class_idx, confidence))
+        
+        # Not enough predictions yet
+        if len(self.recent_predictions) < 3:
+            return None
+            
+        # Count occurrences of each class
+        class_counts = {}
+        class_confs = {}
+        
+        for idx, conf in self.recent_predictions:
+            if idx not in class_counts:
+                class_counts[idx] = 0
+                class_confs[idx] = []
+            class_counts[idx] += 1
+            class_confs[idx].append(conf)
+        
+        # Find most common class
+        most_common = max(class_counts.items(), key=lambda x: x[1])
+        most_common_idx = most_common[0]
+        count = most_common[1]
+        
+        # Only return a prediction if it appears in majority of recent predictions
+        if count >= len(self.recent_predictions) * self.threshold:
+            avg_conf = sum(class_confs[most_common_idx]) / len(class_confs[most_common_idx])
+            
+            # Only return if confidence is above the adaptive threshold
+            if most_common_idx in self.class_thresholds:
+                adaptive_threshold = max(0.5, self.class_thresholds[most_common_idx] * 0.7)
+                if avg_conf >= adaptive_threshold:
+                    return (most_common_idx, avg_conf)
+        
+        return None
+
 class AudioInference:
     def __init__(self, model_path, use_mel=True, use_mfcc=True, threshold=0.5, device_index=None):
         # Create directory for logged audio
@@ -174,10 +243,18 @@ class AudioInference:
         self.threshold = threshold
         self.running = False
         self.thread = None
+        self.prediction_smoother = PredictionSmoother(window_size=5, threshold=0.6)
+        
+        # Class-specific thresholds (will be auto-adjusted during inference)
+        self.class_thresholds = {i: threshold for i in range(len(TARGET_CLASSES_MUSIC))}
+        
+        # Debug mode for logging predictions
+        self.debug_mode = True
+        self.log_predictions = []
 
     def inference_thread(self):
         """Thread function to process audio and make predictions"""
-        prediction_interval = self.audio_processor.window_duration
+        prediction_interval = 0.5  # Make predictions more frequently than window duration
         last_prediction_time = 0
         
         while self.running:
@@ -189,32 +266,86 @@ class AudioInference:
                     # Get audio from the processor
                     audio_data = self.audio_processor.get_audio()
                     
-                    # Extract features
-                    features = self.extract_features(audio_data)
+                    # Convert numpy array to torch tensor
+                    waveform = torch.tensor(audio_data).float().unsqueeze(0)
+                    
+                    # Normalize waveform (ensure consistency with training)
+                    waveform = normalize_waveform(waveform)
+                    
+                    # Extract features directly from waveform
+                    features = extract_features_from_waveform(
+                        waveform, 
+                        use_mel=self.use_mel, 
+                        use_mfcc=self.use_mfcc
+                    )
                     
                     if features is not None:
                         print(f"Feature shape before model: {features.shape}")
                         
+                        # Save raw audio for manual inspection
+                        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                        raw_path = f"./logged_audio/raw_{timestamp}.wav"
+                        sf.write(raw_path, audio_data, SAMPLE_RATE, subtype='PCM_16')
+                        
                         # Make prediction
                         with torch.no_grad():
-                            outputs = self.model(features)
+                            outputs = self.model(features.unsqueeze(0).to(self.device))
                             probabilities = F.softmax(outputs, dim=1)[0]
-                            confidence, predicted_idx = torch.max(probabilities, 0)
-                            class_name = TARGET_CLASSES_MUSIC[predicted_idx.item()]
-                            confidence_value = confidence.item()
                             
-                            # Display prediction if confidence exceeds threshold
-                            if confidence_value >= self.threshold:
-                                print(f"Detected: {class_name} ({confidence_value:.2f})")
-                    
+                            # Get top 2 predictions for debugging
+                            confidences, indices = torch.topk(probabilities, 2)
+                            
+                            # Get primary prediction
+                            confidence, predicted_idx = confidences[0].item(), indices[0].item()
+                            class_name = TARGET_CLASSES_MUSIC[predicted_idx]
+                            
+                            # Get second-best prediction
+                            confidence2, predicted_idx2 = confidences[1].item(), indices[1].item()
+                            class_name2 = TARGET_CLASSES_MUSIC[predicted_idx2]
+                            
+                            # Apply smoothing
+                            smoothed_prediction = self.prediction_smoother.get_smoothed_prediction(
+                                predicted_idx, confidence
+                            )
+                            
+                            # Show raw prediction
+                            print(f"Raw: {class_name} ({confidence:.2f}), 2nd: {class_name2} ({confidence2:.2f})")
+                            
+                            # Log prediction for debugging
+                            if self.debug_mode:
+                                self.log_predictions.append({
+                                    'time': timestamp,
+                                    'class': class_name,
+                                    'confidence': confidence,
+                                    'second_class': class_name2,
+                                    'second_confidence': confidence2,
+                                    'audio_path': raw_path
+                                })
+                            
+                            # Display smoothed prediction if available
+                            if smoothed_prediction:
+                                smooth_idx, smooth_conf = smoothed_prediction
+                                smooth_class = TARGET_CLASSES_MUSIC[smooth_idx]
+                                print(f"STABLE DETECTION: {smooth_class} ({smooth_conf:.2f})")
+                            
                     last_prediction_time = current_time
                 except Exception as e:
                     print(f"Error in inference thread: {e}")
+                    import traceback
+                    traceback.print_exc()
                     time.sleep(1)  # Wait a bit before trying again
             
             time.sleep(0.1)
 
         print("Inference thread exiting.")
+        
+        # Save debug logs if enabled
+        if self.debug_mode and self.log_predictions:
+            import json
+            log_path = f"./logged_audio/predictions_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+            with open(log_path, 'w') as f:
+                json.dump(self.log_predictions, f, indent=2)
+            print(f"Saved prediction logs to {log_path}")
 
     def start(self):
         """Start real-time inference"""
@@ -247,26 +378,28 @@ class AudioInference:
                 print("[Error] Audio buffer is not finite everywhere.")
                 return None
 
-            # Save audio data to temporary file
-            temp_file = "_temp_inference.wav"
-            sf.write(temp_file, audio_data, SAMPLE_RATE, subtype='PCM_16')
-
+            # Convert numpy array to torch tensor
+            waveform = torch.tensor(audio_data).float().unsqueeze(0)
+            
+            # Normalize waveform (ensure consistency with training)
+            waveform = normalize_waveform(waveform)
+            
+            # Extract features directly from waveform
+            features = extract_features_from_waveform(
+                waveform, 
+                use_mel=self.use_mel, 
+                use_mfcc=self.use_mfcc
+            )
+            
             # Generate timestamp for logging
             timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
             
-            # Save raw audio for manual inspection
+            # Save raw audio for manual inspection (if needed)
             raw_path = f"./logged_audio/raw_{timestamp}.wav"
             sf.write(raw_path, audio_data, SAMPLE_RATE, subtype='PCM_16')
             print(f"[Saved] Logged raw audio to: {raw_path}")
             
-            # Extract features directly from the raw audio
-            features = extract_features_from_file(temp_file, use_mel=self.use_mel, use_mfcc=self.use_mfcc)
-            
-            # Clean up temporary file
-            os.remove(temp_file)
-            
-            # Return features tensor
-            return features.unsqueeze(0).to(self.device) if features is not None else None
+            return features
             
         except Exception as e:
             print(f"Error extracting features: {e}")
@@ -292,12 +425,22 @@ class AudioInference:
             with torch.no_grad():
                 outputs = self.model(features)
                 probabilities = F.softmax(outputs, dim=1)[0]
-                confidence, predicted_idx = torch.max(probabilities, 0)
                 
-                class_name = TARGET_CLASSES_MUSIC[predicted_idx.item()]
-                confidence_value = confidence.item()
+                # Get top 2 predictions
+                confidences, indices = torch.topk(probabilities, 2)
                 
-                return class_name, confidence_value
+                # Primary prediction
+                confidence, predicted_idx = confidences[0].item(), indices[0].item()
+                class_name = TARGET_CLASSES_MUSIC[predicted_idx]
+                
+                # Second best prediction
+                confidence2, predicted_idx2 = confidences[1].item(), indices[1].item()
+                class_name2 = TARGET_CLASSES_MUSIC[predicted_idx2]
+                
+                print(f"Top prediction: {class_name} ({confidence:.2f})")
+                print(f"Second prediction: {class_name2} ({confidence2:.2f})")
+                
+                return class_name, confidence
                 
         except Exception as e:
             print(f"Error processing file: {e}")
@@ -305,7 +448,7 @@ class AudioInference:
 
 def main():
     parser = argparse.ArgumentParser(description='Real-time audio classification')
-    parser.add_argument('--model', type=str, default='./models/Music_Models/best_model.pth', 
+    parser.add_argument('--model', type=str, default='./models/best_model.pth', 
                         help='Path to the saved model file')
     parser.add_argument('--device', type=int, default=None, 
                         help='Index of the audio input device to use')
@@ -313,6 +456,8 @@ def main():
                         help='Path to an audio file to classify (instead of using microphone)')
     parser.add_argument('--threshold', type=float, default=0.5, 
                         help='Confidence threshold for predictions')
+    parser.add_argument('--debug', action='store_true',
+                        help='Enable debug mode with detailed logging')
     
     args = parser.parse_args()
     
@@ -322,6 +467,9 @@ def main():
         device_index=args.device,
         threshold=args.threshold
     )
+    
+    # Set debug mode
+    inference.debug_mode = args.debug
     
     # Either process a file or start real-time inference
     if args.file:

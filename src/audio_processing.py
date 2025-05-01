@@ -3,8 +3,56 @@ import torchaudio
 import torchaudio.transforms as T
 import torch.nn.functional as F
 import os
+import random
 from torch.utils.data import Dataset
 from config import TARGET_CLASSES_MUSIC, SAMPLE_RATE, MAX_FRAMES, N_MELS, N_MFCC
+
+def normalize_waveform(waveform):
+    """
+    Normalize audio waveform to range [-1, 1] and center it around zero
+    """
+    # Center the waveform around zero
+    waveform = waveform - torch.mean(waveform)
+    
+    # Normalize to range [-1, 1]
+    if torch.max(torch.abs(waveform)) > 0:
+        waveform = waveform / torch.max(torch.abs(waveform))
+    
+    return waveform
+
+def apply_augmentation(waveform, mode='train'):
+    """
+    Apply data augmentation to audio waveform during training
+    """
+    if mode != 'train':
+        return waveform
+        
+    # Original waveform dimensions
+    channels, samples = waveform.shape
+    
+    # Random volume change (0.75-1.25)
+    if random.random() > 0.5:
+        volume_factor = 0.75 + random.random() * 0.5
+        waveform = waveform * volume_factor
+        
+    # Random time shift (up to 10% of the audio)
+    if random.random() > 0.5:
+        shift_amount = int(samples * 0.1 * random.random())
+        if random.random() > 0.5:  # Shift right
+            waveform = F.pad(waveform[:, :-shift_amount], (shift_amount, 0))
+        else:  # Shift left
+            waveform = F.pad(waveform[:, shift_amount:], (0, shift_amount))
+            
+    # Add small amount of random noise (SNR between 20-40dB)
+    if random.random() > 0.5:
+        noise_level = 10 ** (-random.uniform(20, 40) / 20)
+        noise = torch.randn_like(waveform) * noise_level
+        waveform = waveform + noise
+        
+    # Re-normalize after augmentation
+    waveform = normalize_waveform(waveform)
+    
+    return waveform
 
 def load_audio(audio_path, target_sr=SAMPLE_RATE):
     """
@@ -102,7 +150,7 @@ def extract_mfcc(waveform, sample_rate=SAMPLE_RATE, n_mfcc=N_MFCC, max_frames=MA
         return torch.zeros(1, n_mfcc, max_frames)
 
 class AudioDataSet(Dataset):
-    def __init__(self, root_dir, use_mfcc=False, use_mel=True):
+    def __init__(self, root_dir, use_mfcc=False, use_mel=True, mode='train'):
         """
         Initialize dataset with options to include MFCC, mel spectrogram, or both
         
@@ -110,10 +158,12 @@ class AudioDataSet(Dataset):
             root_dir: Root directory containing audio files in class folders
             use_mfcc: Whether to include MFCC features
             use_mel: Whether to include mel spectrogram features
+            mode: 'train' to enable augmentation, anything else to disable
         """
         self.root_dir = root_dir
         self.use_mfcc = use_mfcc
         self.use_mel = use_mel
+        self.mode = mode  # Add this line to store the mode
         
         if not (use_mfcc or use_mel):
             raise ValueError("At least one of use_mfcc or use_mel must be True")
@@ -122,6 +172,8 @@ class AudioDataSet(Dataset):
         self.class_mapping = {class_name: i for i, class_name in enumerate(self.classes)}
         
         self.files = []
+        self.class_counts = {class_name: 0 for class_name in self.classes}  # Add this line
+        
         for class_name, label in self.class_mapping.items():
             class_dir = os.path.join(root_dir, class_name)
             if os.path.exists(class_dir):
@@ -133,6 +185,8 @@ class AudioDataSet(Dataset):
                             info = torchaudio.info(file_path)
                             if info.num_frames > 0:
                                 self.files.append((file_path, label))
+                                # Add this line to count files per class
+                                self.class_counts[class_name] += 1
                             else:
                                 print(f"Skipping empty audio file: {file_path}")
                         except Exception as e:
@@ -142,6 +196,7 @@ class AudioDataSet(Dataset):
                 
         # Print some info for debugging
         print(f"Loaded Dataset files: {self.files[:10]}")  # First 10 files
+        print(f"Class distribution: {self.class_counts}")  # Add this line
         
         if len(self.files) == 0:
             raise ValueError("No audio files found in the dataset directory.")
@@ -153,26 +208,32 @@ class AudioDataSet(Dataset):
         try:
             file_path, label = self.files[idx]
             waveform = load_audio(file_path)
-            
+        
+            # Apply augmentation if in training mode - add this block
+            if self.mode == 'train' and hasattr(self, 'mode'):
+                # Check if apply_augmentation function exists
+                if 'apply_augmentation' in globals():
+                    waveform = apply_augmentation(waveform)
+        
             features = []
-            
+        
             if self.use_mel:
                 mel_spectrogram = extract_mel_spectrogram(waveform)
                 features.append(mel_spectrogram)
-            
+        
             if self.use_mfcc:
                 mfccs = extract_mfcc(waveform)
                 features.append(mfccs)
-            
+        
             # Combine features if using both
             if len(features) > 1:
                 # Concatenate along the channel dimension
                 combined_features = torch.cat(features, dim=1)
                 return combined_features, label
-            
+        
             # If only using one feature type
             return features[0], label
-            
+        
         except Exception as e:
             print(f"Error processing item {idx}, file {self.files[idx][0]}: {str(e)}")
             # Return a default tensor and its label to avoid crashing
