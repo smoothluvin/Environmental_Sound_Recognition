@@ -15,8 +15,8 @@ from collections import deque
 from cnn import SoundCNN
 from config import TARGET_CLASSES_MUSIC, SAMPLE_RATE, N_MELS, N_MFCC, MAX_FRAMES
 from audio_processing import extract_features_from_file, extract_features_from_waveform, normalize_waveform
-# Import filtering module but don't use it
-# from filtering_updated import process_audio
+# Import filtering module
+from filtering_updated import process_audio
 
 # Suppress ALSA warnings
 asound = ctypes.CDLL('libasound.so')
@@ -84,16 +84,16 @@ class RealTimeAudioProcessor:
             self.device_index = 0
 
     def record_audio_arecord(self, output_path="temp_arecord.wav"):
-    	"""Record audio using arecord at 16000Hz sample rate"""
-    	# Ensure the device_index is not None and is a valid integer
-    	if self.device_index is None:
+        """Record audio using arecord at 16000Hz sample rate"""
+        # Ensure the device_index is not None and is a valid integer
+        if self.device_index is None:
             self.device_index = 0  # Default to card 0 if not set
         
-    	device_str = f"plughw:{self.device_index},0"
-    	duration = self.window_duration
+        device_str = f"plughw:{self.device_index},0"
+        duration = self.window_duration
 
         # Explicitly set format to 16-bit signed little-endian at 16000Hz
-    	cmd = [
+        cmd = [
             "arecord",
             "-D", device_str,
             "-f", "S16_LE",        # 16-bit signed little-endian format
@@ -105,20 +105,23 @@ class RealTimeAudioProcessor:
             output_path
         ]
 
-    	try:
+        try:
             # Use subprocess with stdout and stderr redirected to suppress messages
             subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    	except subprocess.CalledProcessError as e:
+        except subprocess.CalledProcessError as e:
             # Still handle errors but silently
             return False
 
-    	return True
+        return True
 
     def get_audio(self):
         """Record audio and read it into numpy array"""
         try:
             # Record audio at the correct sample rate
-            self.record_audio_arecord("temp_arecord.wav")
+            success = self.record_audio_arecord("temp_arecord.wav")
+            if not success:
+                print("Failed to record audio")
+                return np.zeros(int(self.window_duration * self.target_sample_rate), dtype=np.float32)
             
             # Read the recorded audio
             audio_data, sample_rate = sf.read("temp_arecord.wav")
@@ -126,19 +129,25 @@ class RealTimeAudioProcessor:
             # Verify sample rate
             if sample_rate != self.target_sample_rate:
                 print(f"[Warning] Recorded sample rate ({sample_rate}Hz) differs from expected ({self.target_sample_rate}Hz)")
-                # No need to resample since we're explicitly recording at 16000Hz
             
             # If the recording is stereo, convert to mono
             if len(audio_data.shape) > 1 and audio_data.shape[1] > 1:
                 audio_data = np.mean(audio_data, axis=1)
             
-            # Verify the audio length matches our expectation
+            # Verify and fix the audio length
             expected_samples = int(self.window_duration * self.target_sample_rate)
             actual_samples = len(audio_data)
             
             if abs(expected_samples - actual_samples) > 100:  # Allow slight variation
                 print(f"[Warning] Audio length ({actual_samples} samples) differs from expected ({expected_samples} samples)")
                 print(f"[Warning] Duration: {actual_samples/self.target_sample_rate:.2f}s vs expected {self.window_duration:.2f}s")
+                
+                # Pad if too short
+                if actual_samples < expected_samples:
+                    audio_data = np.pad(audio_data, (0, expected_samples - actual_samples))
+                # Truncate if too long
+                elif actual_samples > expected_samples:
+                    audio_data = audio_data[:expected_samples]
             
             return audio_data.astype(np.float32)
             
@@ -149,22 +158,22 @@ class RealTimeAudioProcessor:
 
 class PredictionSmoother:
     def __init__(self, window_size=5, threshold=0.7):
-    	"""
-    	Initialize with class-specific thresholds
-    	"""
-    	self.window_size = window_size
-    	self.threshold = threshold
-    	self.recent_predictions = deque(maxlen=window_size)
-    
-    	# Higher threshold for background_noise to reduce false positives
-    	self.class_thresholds = {
-    		0: 0.5,  # Acoustic_Guitar - higher to reduce false positives
-    		1: 0.4,   # Trumpet
-    		2: 0.4,   # Violin
-    		3: 0.4,   # Ukulele
-    		4: 0.4,   # Piano
-    		5: 0.9,   # background_noise - higher to reduce false positives
-		}
+        """
+        Initialize with class-specific thresholds
+        """
+        self.window_size = window_size
+        self.threshold = threshold
+        self.recent_predictions = deque(maxlen=window_size)
+        
+        # Higher threshold for background_noise to reduce false positives
+        self.class_thresholds = {
+            0: 0.5,  # Acoustic_Guitar - higher to reduce false positives
+            1: 0.4,  # Trumpet
+            2: 0.4,  # Violin
+            3: 0.4,  # Ukulele
+            4: 0.4,  # Piano
+            5: 0.9,  # background_noise - higher to reduce false positives
+        }
     
     def update_class_threshold(self, class_idx, confidence):
         """Update running average of confidence for a class"""
@@ -261,99 +270,107 @@ class AudioInference:
         self.log_predictions = []
 
     def inference_thread(self):
-    	"""Thread function to process audio and make predictions"""
-    	prediction_interval = 0.5  # Make predictions more frequently than window duration
-    	last_prediction_time = 0
+        """Thread function to process audio and make predictions"""
+        prediction_interval = 0.5  # Make predictions more frequently than window duration
+        last_prediction_time = 0
     
-    	while self.running:
-        	current_time = time.time()
+        while self.running:
+            current_time = time.time()
         
-        	# Process audio every interval seconds
-        	if current_time - last_prediction_time >= prediction_interval:
-            		try:
-                		# Get audio from the processor
-                		audio_data = self.audio_processor.get_audio()
+            # Process audio every interval seconds
+            if current_time - last_prediction_time >= prediction_interval:
+                try:
+                    # Get audio from the processor
+                    audio_data = self.audio_processor.get_audio()
                 
-                		# Convert numpy array to torch tensor
-                		waveform = torch.tensor(audio_data).float().unsqueeze(0)
-                
-                		# Normalize waveform (ensure consistency with training)
-                		waveform = normalize_waveform(waveform)
-                
-                		# Extract features directly from waveform
-                		features = extract_features_from_waveform(
-                    		waveform, 
-                    		use_mel=self.use_mel, 
-                    		use_mfcc=self.use_mfcc
-                		)
-                
-                		if features is not None:
-                    			# Save raw audio for manual inspection (only in debug mode)
-                    			if self.debug_mode:
-                        			timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-                        			raw_path = f"./logged_audio/raw_{timestamp}.wav"
-                        			sf.write(raw_path, audio_data, SAMPLE_RATE, subtype='PCM_16')
-                    
-                    			# Make prediction
-                    			with torch.no_grad():
-                        			outputs = self.model(features.unsqueeze(0).to(self.device))
-                        			probabilities = calibrated_softmax(outputs, temperature=1.5)[0]
-                        
-                        			# Get top 2 predictions for debugging
-                        			confidences, indices = torch.topk(probabilities, 2)
-                        
-                        			# Use two-stage prediction
-                        			predicted_idx, confidence = self.two_stage_predict(features)
-                        			class_name = TARGET_CLASSES_MUSIC[predicted_idx]
-                        
-                        			# Get second-best prediction (for logging)
-                        			confidence2, predicted_idx2 = confidences[1].item(), indices[1].item()
-                        			class_name2 = TARGET_CLASSES_MUSIC[predicted_idx2]
-                        
-                        			# Apply smoothing
-                        			smoothed_prediction = self.prediction_smoother.get_smoothed_prediction(
-                            			predicted_idx, confidence
-                        			)
+                    # Save raw audio for processing
+                    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                    raw_path = f"./logged_audio/raw_{timestamp}.wav"
+                    sf.write(raw_path, audio_data, SAMPLE_RATE, subtype='PCM_16')
 
-                        			# Only display predictions with confidence >= 0.70
-                        			if smoothed_prediction:
-                            				smooth_idx, smooth_conf = smoothed_prediction
-                            				smooth_class = TARGET_CLASSES_MUSIC[smooth_idx]
-                            				if smooth_conf >= 0.70:
-                                				print(f"{smooth_class}: {smooth_conf:.2f}")
-                        			else:
-                            				# Only show unstable predictions if they exceed 0.70
-                            				if confidence >= 0.70:
-                                				print(f"{class_name}: {confidence:.2f} (unstable)")
+                    # Apply filtering
+                    try:
+                        filtered_audio, _ = process_audio(raw_path)
+                    except Exception as e:
+                        print(f"Filtering error: {e}, using original audio")
+                        filtered_audio = audio_data
+
+                    # Convert filtered numpy array to torch tensor
+                    waveform = torch.tensor(filtered_audio).float().unsqueeze(0)
+
+                    # Normalize waveform
+                    waveform = normalize_waveform(waveform)
+
+                    # Extract features from filtered waveform
+                    features = extract_features_from_waveform(
+                        waveform, 
+                        use_mel=self.use_mel, 
+                        use_mfcc=self.use_mfcc
+                    )
+                
+                    if features is not None:
+                        # Make prediction
+                        with torch.no_grad():
+                            outputs = self.model(features.unsqueeze(0).to(self.device))
+                            probabilities = calibrated_softmax(outputs, temperature=1.0)[0]
                         
-                        			# Log prediction for debugging
-                        			if self.debug_mode:
-                            				self.log_predictions.append({
-                                				'time': timestamp if 'timestamp' in locals() else datetime.datetime.now().strftime("%Y%m%d_%H%M%S"),
-                                				'class': class_name,
-                                				'confidence': confidence,
-                                				'second_class': class_name2,
-                                				'second_confidence': confidence2,
-                                				'audio_path': raw_path if 'raw_path' in locals() else None
-                            				})
+                            # Get top 2 predictions for debugging
+                            confidences, indices = torch.topk(probabilities, 2)
+                        
+                            # Use two-stage prediction
+                            predicted_idx, confidence = self.two_stage_predict(features)
+                            class_name = TARGET_CLASSES_MUSIC[predicted_idx]
+                        
+                            # Get second-best prediction (for logging)
+                            confidence2, predicted_idx2 = confidences[1].item(), indices[1].item()
+                            class_name2 = TARGET_CLASSES_MUSIC[predicted_idx2]
+                        
+                            # Apply smoothing
+                            smoothed_prediction = self.prediction_smoother.get_smoothed_prediction(
+                                predicted_idx, confidence
+                            )
+
+                            # Only display predictions with confidence >= 0.70
+                            if smoothed_prediction:
+                                smooth_idx, smooth_conf = smoothed_prediction
+                                smooth_class = TARGET_CLASSES_MUSIC[smooth_idx]
+                                if smooth_conf >= 0.70:
+                                    print(f"{smooth_class}: {smooth_conf:.2f}")
+                            else:
+                                # Only show unstable predictions if they exceed 0.70
+                                if confidence >= 0.70:
+                                    print(f"{class_name}: {confidence:.2f} (unstable)")
+                        
+                            # Log prediction for debugging
+                            if self.debug_mode:
+                                self.log_predictions.append({
+                                    'time': timestamp,
+                                    'class': class_name,
+                                    'confidence': confidence,
+                                    'second_class': class_name2,
+                                    'second_confidence': confidence2,
+                                    'audio_path': raw_path
+                                })
                             
-                    			last_prediction_time = current_time
+                    last_prediction_time = current_time
                     
-            		except Exception as e:
-                		print(f"Error: {e}")
-                		time.sleep(1)  # Wait a bit before trying again
+                except Exception as e:
+                    print(f"Error: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    time.sleep(1)  # Wait a bit before trying again
             
-        	time.sleep(0.1)
+            time.sleep(0.1)
 
-    	print("Inference thread exiting.")
+        print("Inference thread exiting.")
     
-    	# Save debug logs if enabled
-    	if self.debug_mode and self.log_predictions:
-        	import json
-        	log_path = f"./logged_audio/predictions_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
-        	with open(log_path, 'w') as f:
-            		json.dump(self.log_predictions, f, indent=2)
-        	print(f"Saved prediction logs to {log_path}")
+        # Save debug logs if enabled
+        if self.debug_mode and self.log_predictions:
+            import json
+            log_path = f"./logged_audio/predictions_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+            with open(log_path, 'w') as f:
+                json.dump(self.log_predictions, f, indent=2)
+            print(f"Saved prediction logs to {log_path}")
 
     def start(self):
         """Start real-time inference"""
@@ -380,35 +397,45 @@ class AudioInference:
             self.thread.join(timeout=1.0)
 
     def extract_features(self, audio_data):
-        """Extract features from raw audio data without filtering"""
+        """Extract features from raw audio data with filtering"""
         try:
             if not np.all(np.isfinite(audio_data)):
                 print("[Error] Audio buffer is not finite everywhere.")
                 return None
 
-            # Convert numpy array to torch tensor
-            waveform = torch.tensor(audio_data).float().unsqueeze(0)
-            
-            # Normalize waveform (ensure consistency with training)
-            waveform = normalize_waveform(waveform)
-            
-            # Extract features directly from waveform
-            features = extract_features_from_waveform(
-                waveform, 
-                use_mel=self.use_mel, 
-                use_mfcc=self.use_mfcc
-            )
-            
             # Generate timestamp for logging
             timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
             
             # Save raw audio for manual inspection (if needed)
             raw_path = f"./logged_audio/raw_{timestamp}.wav"
             sf.write(raw_path, audio_data, SAMPLE_RATE, subtype='PCM_16')
-            print(f"[Saved] Logged raw audio to: {raw_path}")
+            
+            # Apply filtering
+            try:
+                filtered_audio, _ = process_audio(raw_path)
+            except Exception as e:
+                print(f"Filtering error: {e}, using original audio")
+                filtered_audio = audio_data
+            
+            # Save filtered audio for comparison
+            filtered_path = f"./logged_audio/filtered_{timestamp}.wav"
+            sf.write(filtered_path, filtered_audio, SAMPLE_RATE, subtype='PCM_16')
+            
+            # Convert filtered numpy array to torch tensor
+            waveform = torch.tensor(filtered_audio).float().unsqueeze(0)
+            
+            # Normalize waveform (ensure consistency with training)
+            waveform = normalize_waveform(waveform)
+            
+            # Extract features from filtered waveform
+            features = extract_features_from_waveform(
+                waveform, 
+                use_mel=self.use_mel, 
+                use_mfcc=self.use_mfcc
+            )
             
             return features
-            
+                
         except Exception as e:
             print(f"Error extracting features: {e}")
             return None
@@ -420,8 +447,32 @@ class AudioInference:
                 print(f"File not found: {file_path}")
                 return None
                 
-            # Extract features directly from the file
-            features = extract_features_from_file(file_path, use_mel=self.use_mel, use_mfcc=self.use_mfcc)
+            # Apply filtering
+            try:
+                filtered_audio, sr = process_audio(file_path)
+                
+                # Save filtered audio for comparison
+                filtered_path = file_path.replace('.wav', '_filtered.wav')
+                sf.write(filtered_path, filtered_audio, sr)
+                print(f"Saved filtered audio to {filtered_path}")
+                
+                # Convert to torch tensor
+                waveform = torch.tensor(filtered_audio).float().unsqueeze(0)
+                
+                # Normalize
+                waveform = normalize_waveform(waveform)
+                
+                # Extract features
+                features = extract_features_from_waveform(
+                    waveform,
+                    use_mel=self.use_mel,
+                    use_mfcc=self.use_mfcc
+                )
+                
+            except Exception as e:
+                print(f"Filtering error: {e}, proceeding with original audio")
+                # Extract features directly from the file
+                features = extract_features_from_file(file_path, use_mel=self.use_mel, use_mfcc=self.use_mfcc)
             
             if features is None:
                 return None
@@ -432,7 +483,7 @@ class AudioInference:
             # Make prediction
             with torch.no_grad():
                 outputs = self.model(features)
-                probabilities = calibrated_softmax(outputs, temperature=1.5)[0]
+                probabilities = calibrated_softmax(outputs, temperature=1.0)[0]
                 
                 # Get top 2 predictions
                 confidences, indices = torch.topk(probabilities, 2)
@@ -452,44 +503,46 @@ class AudioInference:
                 
         except Exception as e:
             print(f"Error processing file: {e}")
+            import traceback
+            traceback.print_exc()
             return None
         
     def two_stage_predict(self, features):
-    	"""
-    	Enhanced two-stage prediction to prevent dominant class bias
-    	"""
-    	with torch.no_grad():
-        	outputs = self.model(features.unsqueeze(0).to(self.device))
-        	probs = calibrated_softmax(outputs, temperature=1.0)[0]  # Increased temperature
+        """
+        Enhanced two-stage prediction to prevent dominant class bias
+        """
+        with torch.no_grad():
+            outputs = self.model(features.unsqueeze(0).to(self.device))
+            probs = calibrated_softmax(outputs, temperature=1.0)[0]
         
-        	# Get top prediction first
-        	conf, pred_idx = torch.max(probs, 0)
-        	class_name = TARGET_CLASSES_MUSIC[pred_idx]
+            # Get top prediction first
+            conf, pred_idx = torch.max(probs, 0)
+            class_name = TARGET_CLASSES_MUSIC[pred_idx]
         
-        	# If Acoustic Guitar with very high confidence, check second prediction
-        	if class_name == "Acoustic_Guitar" and conf > 0.7:
-            		# Get second highest prediction
-            		probs_copy = probs.clone()
-            		probs_copy[pred_idx] = 0  # Zero out Acoustic_Guitar
-            		second_conf, second_idx = torch.max(probs_copy, 0)
+            # If Acoustic Guitar with very high confidence, check second prediction
+            if class_name == "Acoustic_Guitar" and conf > 0.7:
+                # Get second highest prediction
+                probs_copy = probs.clone()
+                probs_copy[pred_idx] = 0  # Zero out Acoustic_Guitar
+                second_conf, second_idx = torch.max(probs_copy, 0)
             
-            		# If second prediction is strong enough, return it instead
-            		if second_conf > 0.2:
-                		return second_idx.item(), second_conf.item()
+                # If second prediction is strong enough, return it instead
+                if second_conf > 0.2:
+                    return second_idx.item(), second_conf.item()
         
-        	# Similarly for background_noise        
-        	if class_name == "background_noise" and conf > 0.7:
-            		# Get second highest prediction
-            		probs_copy = probs.clone()
-            		probs_copy[pred_idx] = 0  # Zero out background_noise
-            		second_conf, second_idx = torch.max(probs_copy, 0)
+            # Similarly for background_noise        
+            if class_name == "background_noise" and conf > 0.7:
+                # Get second highest prediction
+                probs_copy = probs.clone()
+                probs_copy[pred_idx] = 0  # Zero out background_noise
+                second_conf, second_idx = torch.max(probs_copy, 0)
             
-            		# If second prediction is strong enough, return it instead
-            		if second_conf > 0.25:
-                		return second_idx.item(), second_conf.item()
+                # If second prediction is strong enough, return it instead
+                if second_conf > 0.25:
+                    return second_idx.item(), second_conf.item()
         
-        	# Return the normal prediction if no override
-        	return pred_idx.item(), conf.item()
+            # Return the normal prediction if no override
+            return pred_idx.item(), conf.item()
 
 def main():
     parser = argparse.ArgumentParser(description='Real-time audio classification')
@@ -503,6 +556,8 @@ def main():
                         help='Confidence threshold for predictions')
     parser.add_argument('--debug', action='store_true',
                         help='Enable debug mode with detailed logging')
+    parser.add_argument('--no-filter', action='store_true',
+                        help='Disable audio filtering')
     
     args = parser.parse_args()
     
