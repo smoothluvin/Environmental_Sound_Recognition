@@ -9,7 +9,7 @@ import os
 
 # ----------------------- High-End Blending -----------------------
 
-def preserve_high_end_blend(original, filtered, sr, cutoff_freq=5000, alpha=0.7):
+def preserve_high_end_blend(original, filtered, sr, cutoff_freq=5000, alpha=0.95):
     """
     Blend original and filtered high-end: final = α*orig + (1-α)*filt
     for STFT bins ≥ cutoff_freq.
