@@ -7,12 +7,10 @@ from scipy.signal import wiener
 import soundfile as sf
 import os
 
-# ----------------------- High-End Blending -----------------------
-
-def preserve_high_end_blend(original, filtered, sr, cutoff_freq=5000, alpha=0.95):
+def preserve_high_end_blend(original, filtered, sr, cutoff_freq=7000, alpha=0.8):
     """
     Blend original and filtered high-end: final = α*orig + (1-α)*filt
-    for STFT bins ≥ cutoff_freq.
+    for STFT bins ≥ cutoff_freq, and print diagnostics.
     """
     S_orig = librosa.stft(original)
     S_filt = librosa.stft(filtered)
@@ -22,9 +20,20 @@ def preserve_high_end_blend(original, filtered, sr, cutoff_freq=5000, alpha=0.95
     mag_orig, phase_orig = np.abs(S_orig), np.angle(S_orig)
     mag_filt, phase_filt = np.abs(S_filt), np.angle(S_filt)
 
-    # blend magnitudes above cutoff, keep filtered phase
+    # compute average high-end energy in each
+    orig_high = mag_orig[mask, :].mean()
+    filt_high = mag_filt[mask, :].mean()
+
+    # blend magnitudes above cutoff
     mag_final = mag_filt.copy()
     mag_final[mask, :] = alpha * mag_orig[mask, :] + (1 - alpha) * mag_filt[mask, :]
+
+    final_high = mag_final[mask, :].mean()
+
+    print(f"[blend debug] cutoff={cutoff_freq} Hz, α={alpha}")
+    print(f"  orig_high_energy = {orig_high:.6f}")
+    print(f"  filt_high_energy = {filt_high:.6f}")
+    print(f"  final_high_energy = {final_high:.6f}")
 
     S_final = mag_final * np.exp(1j * phase_filt)
     return librosa.istft(S_final)
@@ -119,7 +128,7 @@ def dynamic_filter(signal, sr, frame_length=1024, hop_length=512):
     return out[:len(signal)] / (norm[:len(signal)] + 1e-8)
 
 # ----------------------- Main Processing Function -----------------------
-def process_audio(file_path, cutoff_freq=5000, alpha=0.7):
+def process_audio(file_path, cutoff_freq=3000, alpha=0):
     # 1. Load & denoise
     y, sr = librosa.load(file_path, sr=None)
     y_denoised = nr.reduce_noise(y=y, sr=sr)
@@ -188,4 +197,5 @@ if __name__ == "__main__":
     if len(sys.argv) < 2:
         print("Usage: python process_audio.py <audio_file_path>")
     else:
+        # just pass the file path and let process_audio use its default cutoff and alpha
         process_audio(sys.argv[1])
