@@ -158,13 +158,13 @@ class PredictionSmoother:
     
     	# Higher threshold for background_noise to reduce false positives
     	self.class_thresholds = {
-        	0: 0.7,  # Acoustic_Guitar
-        	1: 0.5,  # Drum_set
-        	2: 0.7,  # Harmonica (lower due to fewer samples)
-        	3: 0.8,  # Piano
-        	4: 0.5,  # background_noise (higher to reduce overconfidence)
-        	5: 0.6   # silence
-    	}
+    		0: 0.5,  # Acoustic_Guitar - higher to reduce false positives
+    		1: 0.4,   # Trumpet
+    		2: 0.4,   # Violin
+    		3: 0.4,   # Ukulele
+    		4: 0.4,   # Piano
+    		5: 0.9,   # background_noise - higher to reduce false positives
+		}
     
     def update_class_threshold(self, class_idx, confidence):
         """Update running average of confidence for a class"""
@@ -314,15 +314,17 @@ class AudioInference:
                         			smoothed_prediction = self.prediction_smoother.get_smoothed_prediction(
                             			predicted_idx, confidence
                         			)
-                        
-                        			# Simplified output - just show the prediction and confidence
+
+                        			# Only display predictions with confidence >= 0.70
                         			if smoothed_prediction:
                             				smooth_idx, smooth_conf = smoothed_prediction
                             				smooth_class = TARGET_CLASSES_MUSIC[smooth_idx]
-                            				print(f"{smooth_class}: {smooth_conf:.2f}")
+                            				if smooth_conf >= 0.70:
+                                				print(f"{smooth_class}: {smooth_conf:.2f}")
                         			else:
-                            				# No stable prediction yet, just show the current prediction
-                            				print(f"{class_name}: {confidence:.2f} (unstable)")
+                            				# Only show unstable predictions if they exceed 0.70
+                            				if confidence >= 0.70:
+                                				print(f"{class_name}: {confidence:.2f} (unstable)")
                         
                         			# Log prediction for debugging
                         			if self.debug_mode:
@@ -453,34 +455,41 @@ class AudioInference:
             return None
         
     def two_stage_predict(self, features):
-        """
-        First determine if it's an instrument vs non-instrument
-        Then classify specific class
-        """
-        with torch.no_grad():
-            outputs = self.model(features.unsqueeze(0).to(self.device))
-            probs = calibrated_softmax(outputs, temperature=1.5)[0]
+    	"""
+    	Enhanced two-stage prediction to prevent dominant class bias
+    	"""
+    	with torch.no_grad():
+        	outputs = self.model(features.unsqueeze(0).to(self.device))
+        	probs = calibrated_softmax(outputs, temperature=1.0)[0]  # Increased temperature
         
-            # Get background noise and silence probabilities
-            bg_idx = TARGET_CLASSES_MUSIC.index("background_noise")
-            silence_idx = TARGET_CLASSES_MUSIC.index("silence")
-            bg_prob = probs[bg_idx]
-            silence_prob = probs[silence_idx]
+        	# Get top prediction first
+        	conf, pred_idx = torch.max(probs, 0)
+        	class_name = TARGET_CLASSES_MUSIC[pred_idx]
         
-            # If background noise probability is very high, check second prediction
-            if bg_prob > 0.75:
-                # Get second highest prediction
-                probs_copy = probs.clone()
-                probs_copy[bg_idx] = 0  # Zero out background_noise
-                second_conf, second_idx = torch.max(probs_copy, 0)
+        	# If Acoustic Guitar with very high confidence, check second prediction
+        	if class_name == "Acoustic_Guitar" and conf > 0.7:
+            		# Get second highest prediction
+            		probs_copy = probs.clone()
+            		probs_copy[pred_idx] = 0  # Zero out Acoustic_Guitar
+            		second_conf, second_idx = torch.max(probs_copy, 0)
             
-                # If second prediction is strong enough, return it instead
-                if second_conf > 0.2:
-                    return second_idx.item(), second_conf.item()
-                
-            # Return the normal prediction
-            conf, pred_idx = torch.max(probs, 0)
-            return pred_idx.item(), conf.item()
+            		# If second prediction is strong enough, return it instead
+            		if second_conf > 0.2:
+                		return second_idx.item(), second_conf.item()
+        
+        	# Similarly for background_noise        
+        	if class_name == "background_noise" and conf > 0.7:
+            		# Get second highest prediction
+            		probs_copy = probs.clone()
+            		probs_copy[pred_idx] = 0  # Zero out background_noise
+            		second_conf, second_idx = torch.max(probs_copy, 0)
+            
+            		# If second prediction is strong enough, return it instead
+            		if second_conf > 0.25:
+                		return second_idx.item(), second_conf.item()
+        
+        	# Return the normal prediction if no override
+        	return pred_idx.item(), conf.item()
 
 def main():
     parser = argparse.ArgumentParser(description='Real-time audio classification')
