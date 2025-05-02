@@ -128,7 +128,7 @@ def dynamic_filter(signal, sr, frame_length=1024, hop_length=512):
     return out[:len(signal)] / (norm[:len(signal)] + 1e-8)
 
 # ----------------------- Main Processing Function -----------------------
-def process_audio(file_path, cutoff_freq=3000, alpha=0):
+def process_audio(file_path, cutoff_freq=3000, alpha=0.8):
     # 1. Load & denoise
     y, sr = librosa.load(file_path, sr=None)
     y_denoised = nr.reduce_noise(y=y, sr=sr)
