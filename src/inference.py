@@ -16,7 +16,7 @@ from cnn import SoundCNN
 from config import TARGET_CLASSES_MUSIC, SAMPLE_RATE, N_MELS, N_MFCC, MAX_FRAMES
 from audio_processing import extract_features_from_file, extract_features_from_waveform, normalize_waveform
 # Import filtering module but don't use it
-# from filtering import process_audio
+from filtering_updated import process_audio
 
 # Suppress ALSA warnings
 asound = ctypes.CDLL('libasound.so')

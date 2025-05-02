@@ -30,10 +30,10 @@ def preserve_high_end_blend(original, filtered, sr, cutoff_freq=7000, alpha=0.8)
 
     final_high = mag_final[mask, :].mean()
 
-    print(f"[blend debug] cutoff={cutoff_freq} Hz, α={alpha}")
-    print(f"  orig_high_energy = {orig_high:.6f}")
-    print(f"  filt_high_energy = {filt_high:.6f}")
-    print(f"  final_high_energy = {final_high:.6f}")
+    # print(f"[blend debug] cutoff={cutoff_freq} Hz, α={alpha}")
+    # print(f"  orig_high_energy = {orig_high:.6f}")
+    # print(f"  filt_high_energy = {filt_high:.6f}")
+    # print(f"  final_high_energy = {final_high:.6f}")
 
     S_final = mag_final * np.exp(1j * phase_filt)
     return librosa.istft(S_final)
@@ -128,7 +128,7 @@ def dynamic_filter(signal, sr, frame_length=1024, hop_length=512):
     return out[:len(signal)] / (norm[:len(signal)] + 1e-8)
 
 # ----------------------- Main Processing Function -----------------------
-def process_audio(file_path, cutoff_freq=3000, alpha=0.8):
+def process_audio(file_path, cutoff_freq=2000, alpha=1):
     # 1. Load & denoise
     y, sr = librosa.load(file_path, sr=None)
     y_denoised = nr.reduce_noise(y=y, sr=sr)
@@ -161,7 +161,7 @@ def process_audio(file_path, cutoff_freq=3000, alpha=0.8):
         category = "Noisy/Chaotic"
     else:
         category = "Hybrid (Mixed)"
-    print("Audio Category:", category)
+    # print("Audio Category:", category)
 
     # 4. Apply the filtering chain based on category
     if category == "Impulse-Like":
@@ -185,7 +185,7 @@ def process_audio(file_path, cutoff_freq=3000, alpha=0.8):
     # 6. Save output
     output_path = "filtered_output.wav"
     sf.write(output_path, filtered, sr)
-    print(f"Saved filtered audio (with high-end blend) to {output_path}")
+    # print(f"Saved filtered audio (with high-end blend) to {output_path}")
 
     return filtered, sr
 
