@@ -1,6 +1,6 @@
 # Audio Classes
 TARGET_CLASSES_ESR = ["crying_baby", "glass_breaking", "gun_shot", "siren", "Screaming", "Slam", "Smoke_detector_smoke_alarm"]
-TARGET_CLASSES_MUSIC = ["Acoustic_Guitar", "Drum_set", "Harmonica", "Piano", "background_noise", "silence"]
+TARGET_CLASSES_MUSIC = ["Acoustic_Guitar", "Trumpet", "Violin", "Ukulele", "Piano", "background_noise"]
 
 # Default Audio Settings
 SAMPLE_RATE = 16000
