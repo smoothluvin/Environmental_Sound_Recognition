@@ -15,29 +15,31 @@ from cnn import SoundCNN
 from config import TARGET_CLASSES_MUSIC, MAX_FRAMES
 
 def calculate_class_weights(class_counts):
-    """
-    Calculate class weights inversely proportional to class frequencies
-    
-    Args:
-        class_counts: Dictionary mapping class names to counts
-    
-    Returns:
-        Tensor of class weights
-    """
+    """Refined class weight calculation"""
     total_samples = sum(class_counts.values())
     weights = []
     
     for class_name in TARGET_CLASSES_MUSIC:
         count = class_counts.get(class_name, 0)
         if count == 0:
-            # Handle classes with no samples (though this shouldn't happen)
             weight = 1.0
         else:
-            # Calculate weight as inverse of frequency
+            # Base weight calculation
             weight = total_samples / (len(TARGET_CLASSES_MUSIC) * count)
+            
+            # Adjust specific classes
+            if class_name == "Acoustic_Guitar":
+                weight *= 0.7  # Reduce Acoustic Guitar weight
+            elif class_name == "background_noise":
+                weight *= 1.3  # Increase background noise weight
+            elif class_name == "Drum_set":
+                weight *= 1.5  # Additional weight for drums due to small sample size
+            elif class_name == "Harmonica":
+                weight *= 1.3
+        
         weights.append(weight)
     
-    # Normalize weights
+    # Normalize weights to keep loss scale reasonable
     weights_tensor = torch.tensor(weights, dtype=torch.float)
     return weights_tensor
 

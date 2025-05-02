@@ -86,33 +86,33 @@ class RealTimeAudioProcessor:
     def record_audio_arecord(self, output_path="temp_arecord.wav"):
     	"""Record audio using arecord at 16000Hz sample rate"""
     	# Ensure the device_index is not None and is a valid integer
-    	if self.device_index is None:
-        	self.device_index = 0  # Default to card 0 if not set
+        if self.device_index is None:
+            self.device_index = 0  # Default to card 0 if not set
         
-    	device_str = f"plughw:{self.device_index},0"
-    	duration = self.window_duration
-    
-    	# Explicitly set format to 16-bit signed little-endian at 16000Hz
-    	cmd = [
-        	"arecord",
-        	"-D", device_str,
-        	"-f", "S16_LE",        # 16-bit signed little-endian format
-        	"-r", "16000",         # 16kHz sample rate (matching your model)
-        	"-c", "1",             # Mono
-        	"-t", "wav",
-        	"-d", str(int(duration)),
-        	"-q",                  # Add quiet flag
-        	output_path
-    	]
-    
-    	try:
-        	# Use subprocess with stdout and stderr redirected to suppress messages
-        	subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    	except subprocess.CalledProcessError as e:
-        	# Still handle errors but silently
-        	return False
-    
-    	return True
+        device_str = f"plughw:{self.device_index},0"
+        duration = self.window_duration
+
+        # Explicitly set format to 16-bit signed little-endian at 16000Hz
+        cmd = [
+            "arecord",
+            "-D", device_str,
+            "-f", "S16_LE",        # 16-bit signed little-endian format
+            "-r", "16000",         # 16kHz sample rate (matching your model)
+            "-c", "1",             # Mono
+            "-t", "wav",
+            "-d", str(int(duration)),
+            "-q",                  # Add quiet flag
+            output_path
+        ]
+
+        try:
+            # Use subprocess with stdout and stderr redirected to suppress messages
+            subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except subprocess.CalledProcessError as e:
+            # Still handle errors but silently
+            return False
+
+        return True
 
     def get_audio(self):
         """Record audio and read it into numpy array"""
@@ -158,11 +158,11 @@ class PredictionSmoother:
     
     	# Higher threshold for background_noise to reduce false positives
     	self.class_thresholds = {
-        	0: 0.7,  # Acoustic_Guitar
+        	0: 0.85,  # Acoustic_Guitar
         	1: 0.7,  # Drum_set
         	2: 0.6,  # Harmonica (lower due to fewer samples)
         	3: 0.7,  # Piano
-        	4: 0.9,  # background_noise (higher to reduce overconfidence)
+        	4: 0.8,  # background_noise (higher to reduce overconfidence)
         	5: 0.6   # silence
     	}
     
