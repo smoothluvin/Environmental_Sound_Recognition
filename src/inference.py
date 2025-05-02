@@ -30,7 +30,7 @@ def calibrated_softmax(logits, temperature=1.5):
     return F.softmax(logits / temperature, dim=1)
 
 class RealTimeAudioProcessor:
-    def __init__(self, device_index=None, sample_rate=44100, target_sample_rate=16000, window_duration=3.0):
+    def __init__(self, device_index=None, sample_rate=16000, target_sample_rate=16000, window_duration=3.0):
         self.device_sample_rate = sample_rate
         self.target_sample_rate = target_sample_rate
         self.window_duration = window_duration
@@ -86,14 +86,14 @@ class RealTimeAudioProcessor:
     def record_audio_arecord(self, output_path="temp_arecord.wav"):
     	"""Record audio using arecord at 16000Hz sample rate"""
     	# Ensure the device_index is not None and is a valid integer
-        if self.device_index is None:
+    	if self.device_index is None:
             self.device_index = 0  # Default to card 0 if not set
         
-        device_str = f"plughw:{self.device_index},0"
-        duration = self.window_duration
+    	device_str = f"plughw:{self.device_index},0"
+    	duration = self.window_duration
 
         # Explicitly set format to 16-bit signed little-endian at 16000Hz
-        cmd = [
+    	cmd = [
             "arecord",
             "-D", device_str,
             "-f", "S16_LE",        # 16-bit signed little-endian format
@@ -105,14 +105,14 @@ class RealTimeAudioProcessor:
             output_path
         ]
 
-        try:
+    	try:
             # Use subprocess with stdout and stderr redirected to suppress messages
             subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        except subprocess.CalledProcessError as e:
+    	except subprocess.CalledProcessError as e:
             # Still handle errors but silently
             return False
 
-        return True
+    	return True
 
     def get_audio(self):
         """Record audio and read it into numpy array"""
@@ -158,11 +158,11 @@ class PredictionSmoother:
     
     	# Higher threshold for background_noise to reduce false positives
     	self.class_thresholds = {
-        	0: 0.85,  # Acoustic_Guitar
-        	1: 0.7,  # Drum_set
-        	2: 0.6,  # Harmonica (lower due to fewer samples)
-        	3: 0.7,  # Piano
-        	4: 0.8,  # background_noise (higher to reduce overconfidence)
+        	0: 0.7,  # Acoustic_Guitar
+        	1: 0.5,  # Drum_set
+        	2: 0.7,  # Harmonica (lower due to fewer samples)
+        	3: 0.8,  # Piano
+        	4: 0.5,  # background_noise (higher to reduce overconfidence)
         	5: 0.6   # silence
     	}
     
