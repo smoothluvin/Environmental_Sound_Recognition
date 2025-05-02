@@ -162,7 +162,7 @@ def train_model(args):
         batch_size=args.batch_size, 
         shuffle=True,
         num_workers=args.num_workers,
-        drop_last=False
+        drop_last=True
     )
     
     # Load validation dataset
@@ -182,7 +182,7 @@ def train_model(args):
         val_dataset, 
         batch_size=args.batch_size,
         num_workers=args.num_workers,
-        drop_last=False
+        drop_last=True
     )
     
     # Initialize model
