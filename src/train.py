@@ -29,13 +29,11 @@ def calculate_class_weights(class_counts):
             
             # Adjust specific classes
             if class_name == "Acoustic_Guitar":
-                weight *= 0.7  # Reduce Acoustic Guitar weight
+                weight *= 0.6  # Reduce Acoustic Guitar weight
             elif class_name == "background_noise":
-                weight *= 1.3  # Increase background noise weight
-            elif class_name == "Drum_set":
-                weight *= 1.5  # Additional weight for drums due to small sample size
-            elif class_name == "Harmonica":
-                weight *= 1.3
+                weight *= 1.0  # Increase background noise weight
+            elif class_name == "piano":
+                weight *= 0.7
         
         weights.append(weight)
     
